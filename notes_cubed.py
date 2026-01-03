@@ -11,6 +11,7 @@ import pyglet
 from pyglet import gl, shapes, sprite
 from pyglet.image.buffer import Framebuffer
 from pyglet.math import Vec3, Vec4
+from pyglet.media import synthesis
 from pyglet.window import key, mouse
 
 
@@ -29,6 +30,7 @@ DEFAULT_CONFIG = {
     "last_face": 0,
     "remote": "",
     "backgrounds": {name: {"type": "color", "value": DEFAULT_BACKGROUNDS[name]} for name in FACE_NAMES},
+    "font_colors": {name: [255, 255, 255] for name in FACE_NAMES},
 }
 EDITOR_MARGIN = 80
 EDITOR_SCALE = 0.72  # fraction of window size used by editor overlay
@@ -40,6 +42,34 @@ FACE_KEY_WIDTH = 120
 FACE_KEY_HEIGHT = 22
 FACE_KEY_SPACING = 6
 FACE_KEY_MARGIN = 18
+SCROLLBAR_WIDTH = 4
+SCROLLBAR_MARGIN = 10
+SCROLLBAR_MIN_HEIGHT = 24
+SETTINGS_PANEL_WIDTH = 320
+SETTINGS_PANEL_HEIGHT = 270
+SETTINGS_PANEL_PADDING = 12
+SETTINGS_SWATCH_SIZE = 14
+SETTINGS_SWATCH_GAP = 6
+SETTINGS_BOX_WIDTH = 110
+SETTINGS_BOX_HEIGHT = 18
+SETTINGS_BUTTON_WIDTH = 70
+SETTINGS_BUTTON_HEIGHT = 18
+FONT_COLOR_PRESETS = [
+    (255, 255, 255),
+    (240, 220, 170),
+    (180, 220, 255),
+    (255, 160, 160),
+    (180, 255, 200),
+    (210, 210, 210),
+]
+FACE_COLOR_PRESETS = [
+    (30, 30, 46),
+    (16, 49, 74),
+    (45, 27, 63),
+    (60, 47, 47),
+    (15, 61, 62),
+    (58, 42, 26),
+]
 
 
 def parse_color(value, fallback=(40, 40, 50)):
@@ -81,10 +111,17 @@ def load_config():
     for name in FACE_NAMES:
         if name not in data["backgrounds"]:
             data["backgrounds"][name] = {"type": "color", "value": DEFAULT_BACKGROUNDS[name]}
+        elif data["backgrounds"][name].get("type") == "image":
+            data["backgrounds"][name].setdefault("mode", "scale")
     if "remote" not in data:
         data["remote"] = ""
     if "last_face" not in data:
         data["last_face"] = 0
+    if "font_colors" not in data:
+        data["font_colors"] = DEFAULT_CONFIG["font_colors"]
+    for name in FACE_NAMES:
+        if name not in data["font_colors"]:
+            data["font_colors"][name] = DEFAULT_CONFIG["font_colors"][name]
     return data
 
 
@@ -351,12 +388,13 @@ class CubeRenderer:
 
 
 class FaceState:
-    def __init__(self, name, path, background_def):
+    def __init__(self, name, path, background_def, font_color=None):
         self.name = name
         self.path = path
         self.background_def = background_def or {"type": "color", "value": DEFAULT_BACKGROUNDS[name]}
+        self.font_color = tuple(int(c) for c in (font_color or (255, 255, 255))[:3])
         self.document = pyglet.text.document.UnformattedDocument(self._load_text())
-        base_style = {"font_name": "Consolas", "font_size": 14, "color": (255, 255, 255, 255)}
+        base_style = {"font_name": "Consolas", "font_size": 14, "color": (*self.font_color, 255)}
         self.document.set_style(0, len(self.document.text), base_style)
         self.layout = None
         self.caret = None
@@ -386,7 +424,7 @@ class FaceState:
         )
         self.layout.x = EDITOR_MARGIN
         self.layout.y = EDITOR_MARGIN
-        self.caret = pyglet.text.caret.Caret(self.layout, color=(255, 255, 255))
+        self.caret = pyglet.text.caret.Caret(self.layout, color=(*self.font_color, 255))
 
     def resize_layout(self, width, height):
         if not self.layout:
@@ -422,7 +460,7 @@ class FaceState:
         self._preview_doc.set_style(
             0,
             0,
-            {"font_name": "Consolas", "font_size": 14, "color": (255, 255, 255, 255)},
+            {"font_name": "Consolas", "font_size": 14, "color": (*self.font_color, 255)},
         )
         self._preview_layout = pyglet.text.layout.TextLayout(
             self._preview_doc,
@@ -448,7 +486,7 @@ class FaceState:
             self._preview_doc.set_style(
                 0,
                 len(self._preview_doc.text),
-                {"font_name": "Consolas", "font_size": 14, "color": (255, 255, 255, 255)},
+                {"font_name": "Consolas", "font_size": 14, "color": (*self.font_color, 255)},
             )
 
         prev_view = window.view
@@ -490,6 +528,39 @@ class FaceState:
     def background_image(self):
         return self._bg_image
 
+    def background_image_mode(self):
+        if self.background_def.get("type") == "image":
+            return self.background_def.get("mode", "scale")
+        return "scale"
+
+    def set_background_def(self, background_def):
+        self.background_def = background_def or {"type": "color", "value": DEFAULT_BACKGROUNDS[self.name]}
+        if self.background_def.get("type") == "image":
+            self.background_def.setdefault("mode", "scale")
+        self._load_background_asset()
+
+    def set_font_color(self, color):
+        rgb = tuple(int(c) for c in color[:3])
+        self.font_color = rgb
+        self.document.set_style(0, len(self.document.text), {"color": (*self.font_color, 255)})
+        if self.caret:
+            self.caret.color = (*self.font_color, 255)
+        self.preview_dirty = True
+
+    def title_text(self):
+        text = self.document.text
+        if text:
+            line = text.splitlines()[0].strip()
+            if line:
+                return line
+        return self.name.capitalize()
+
+    def key_title(self, max_chars=14):
+        title = self.title_text()
+        if len(title) > max_chars:
+            return title[: max(1, max_chars - 3)] + "..."
+        return title
+
     def _load_background_asset(self):
         if self.background_def.get("type") != "image":
             self._bg_image = None
@@ -522,7 +593,12 @@ class NotesCubedApp(pyglet.window.Window):
         self.config_data = config
         self.faces = []
         for name in FACE_NAMES:
-            face = FaceState(name, DATA_DIR / f"{name}.txt", config["backgrounds"].get(name))
+            face = FaceState(
+                name,
+                DATA_DIR / f"{name}.txt",
+                config["backgrounds"].get(name),
+                config["font_colors"].get(name),
+            )
             face.bind_layout(self.width - 2 * EDITOR_MARGIN, self.height - 2 * EDITOR_MARGIN)
             self.faces.append(face)
         self.current_face_index = max(0, min(len(self.faces) - 1, config.get("last_face", 0)))
@@ -532,16 +608,42 @@ class NotesCubedApp(pyglet.window.Window):
         self.dragging = False
         self.last_mouse = (0, 0)
         self._drag_vector = None
+        self._drag_started_outside_cube = False
         self.edit_mode = True
         self._return_to_edit_when_aligned = False
         self.last_save = time.time()
 
         self.ui_batch = pyglet.graphics.Batch()
+        self.settings_batch = pyglet.graphics.Batch()
         self.editor_rect = None
         self.face_label = None
         self.mode_label = None
         self.toast_label = None
         self.face_key_items = []
+        self.cog_label = None
+        self.settings_panel = None
+        self.settings_title = None
+        self.settings_labels = {}
+        self.font_color_swatches = []
+        self.face_color_swatches = []
+        self.font_rgb_box = None
+        self.font_rgb_label = None
+        self.face_rgb_box = None
+        self.face_rgb_label = None
+        self.image_button = None
+        self.image_label = None
+        self.image_info_label = None
+        self.mode_buttons = []
+        self.settings_open = False
+        self._settings_input_target = None
+        self._settings_input_text = ""
+        self._settings_panel_bounds = None
+        self._settings_font_rgb_bounds = None
+        self._settings_face_rgb_bounds = None
+        self._settings_image_bounds = None
+        self._pending_edit_click = None
+        self._scrollbar_track = None
+        self._scrollbar_thumb = None
         self._toast_until = 0.0
         self._pending_screenshot_path = None
         self._mvp_3d = None
@@ -624,6 +726,12 @@ class NotesCubedApp(pyglet.window.Window):
             self.mode_label.text = self._mode_text()
             self.mode_label.y = self.height - 50
 
+    def _face_key_label_text(self, face_name):
+        for face in self.faces:
+            if face.name == face_name:
+                return face.key_title()
+        return face_name.capitalize()
+
     def _build_face_keys(self):
         if not self.face_key_items:
             for face_name in FACE_NAMES:
@@ -636,7 +744,7 @@ class NotesCubedApp(pyglet.window.Window):
                     batch=self.ui_batch,
                 )
                 label = pyglet.text.Label(
-                    face_name.capitalize(),
+                    self._face_key_label_text(face_name),
                     font_size=10,
                     x=0,
                     y=0,
@@ -659,6 +767,7 @@ class NotesCubedApp(pyglet.window.Window):
         right = self.width - FACE_KEY_MARGIN
         top = self.height - FACE_KEY_MARGIN
         current_name = self.faces[self.current_face_index].name
+        face_lookup = {face.name: face for face in self.faces}
         for index, item in enumerate(self.face_key_items):
             rect = item["rect"]
             label = item["label"]
@@ -666,6 +775,9 @@ class NotesCubedApp(pyglet.window.Window):
             rect.y = top - (FACE_KEY_HEIGHT + FACE_KEY_SPACING) * index - FACE_KEY_HEIGHT
             label.x = rect.x + 8
             label.y = rect.y + FACE_KEY_HEIGHT / 2
+            face_state = face_lookup.get(item["name"])
+            if face_state:
+                label.text = face_state.key_title()
             if item["name"] == current_name:
                 rect.color = (80, 120, 190)
                 label.color = (255, 255, 255, 240)
@@ -677,6 +789,565 @@ class NotesCubedApp(pyglet.window.Window):
         if self.edit_mode:
             return "Edit mode (click outside editor to rotate, F12 screenshot)"
         return "Rotate mode (release to snap, F12 screenshot)"
+
+    def _apply_pending_caret(self):
+        if not self._pending_edit_click:
+            return
+        x, y = self._pending_edit_click
+        if self._point_in_editor(x, y):
+            self._activate_caret(x, y, mouse.LEFT, 0)
+        self._pending_edit_click = None
+
+    def _ensure_scrollbar(self):
+        if self._scrollbar_track is None:
+            self._scrollbar_track = shapes.Rectangle(0, 0, 1, 1, color=(20, 20, 24))
+            self._scrollbar_track.opacity = 140
+        if self._scrollbar_thumb is None:
+            self._scrollbar_thumb = shapes.Rectangle(0, 0, 1, 1, color=(220, 220, 220))
+            self._scrollbar_thumb.opacity = 220
+
+    def _update_scrollbar(self, face, pad):
+        self._ensure_scrollbar()
+        if not face.layout or face.layout.content_height <= face.layout.height + 1:
+            self._scrollbar_track.opacity = 0
+            self._scrollbar_thumb.opacity = 0
+            return
+        track_x = self.editor_rect.x + self.editor_rect.width - pad - SCROLLBAR_MARGIN
+        track_y = self.editor_rect.y + pad
+        track_height = max(1, self.editor_rect.height - pad * 2)
+        view_ratio = min(1.0, face.layout.height / float(face.layout.content_height))
+        thumb_height = max(SCROLLBAR_MIN_HEIGHT, int(track_height * view_ratio))
+        max_scroll = max(1, face.layout.content_height - face.layout.height)
+        scroll_ratio = min(1.0, max(0.0, face.layout.view_y / float(max_scroll)))
+        thumb_y = track_y + (track_height - thumb_height) * scroll_ratio
+        self._scrollbar_track.x = track_x
+        self._scrollbar_track.y = track_y
+        self._scrollbar_track.width = SCROLLBAR_WIDTH
+        self._scrollbar_track.height = track_height
+        self._scrollbar_track.opacity = 120
+        self._scrollbar_thumb.x = track_x
+        self._scrollbar_thumb.y = thumb_y
+        self._scrollbar_thumb.width = SCROLLBAR_WIDTH
+        self._scrollbar_thumb.height = thumb_height
+        self._scrollbar_thumb.opacity = 220
+
+    def _draw_scrollbar(self):
+        if self._scrollbar_track and self._scrollbar_track.opacity > 0:
+            self._scrollbar_track.draw()
+        if self._scrollbar_thumb and self._scrollbar_thumb.opacity > 0:
+            self._scrollbar_thumb.draw()
+
+    def _ensure_settings_ui(self):
+        if self.cog_label is None:
+            self.cog_label = pyglet.text.Label(
+                "⚙",
+                font_size=12,
+                x=0,
+                y=0,
+                anchor_x="center",
+                anchor_y="center",
+                color=(240, 240, 240, 220),
+                batch=self.settings_batch,
+            )
+        if self.settings_panel is None:
+            self.settings_panel = shapes.Rectangle(
+                0,
+                0,
+                SETTINGS_PANEL_WIDTH,
+                SETTINGS_PANEL_HEIGHT,
+                color=(18, 18, 24),
+                batch=self.settings_batch,
+            )
+            self.settings_panel.opacity = 235
+            self.settings_title = pyglet.text.Label(
+                "Face settings",
+                font_size=11,
+                x=0,
+                y=0,
+                color=(240, 240, 240, 230),
+                batch=self.settings_batch,
+            )
+            self.settings_labels["font"] = pyglet.text.Label(
+                "Font color",
+                font_size=9,
+                x=0,
+                y=0,
+                color=(210, 210, 210, 220),
+                batch=self.settings_batch,
+            )
+            self.settings_labels["face"] = pyglet.text.Label(
+                "Face color",
+                font_size=9,
+                x=0,
+                y=0,
+                color=(210, 210, 210, 220),
+                batch=self.settings_batch,
+            )
+            self.settings_labels["font_rgb"] = pyglet.text.Label(
+                "Font RGB",
+                font_size=8,
+                x=0,
+                y=0,
+                color=(180, 180, 180, 220),
+                batch=self.settings_batch,
+            )
+            self.settings_labels["face_rgb"] = pyglet.text.Label(
+                "Face RGB",
+                font_size=8,
+                x=0,
+                y=0,
+                color=(180, 180, 180, 220),
+                batch=self.settings_batch,
+            )
+            self.settings_labels["image"] = pyglet.text.Label(
+                "Image",
+                font_size=9,
+                x=0,
+                y=0,
+                color=(210, 210, 210, 220),
+                batch=self.settings_batch,
+            )
+            self.settings_labels["mode"] = pyglet.text.Label(
+                "Image mode",
+                font_size=8,
+                x=0,
+                y=0,
+                color=(180, 180, 180, 220),
+                batch=self.settings_batch,
+            )
+            for color in FONT_COLOR_PRESETS:
+                rect = shapes.Rectangle(0, 0, SETTINGS_SWATCH_SIZE, SETTINGS_SWATCH_SIZE, color=color, batch=self.settings_batch)
+                rect.opacity = 230
+                self.font_color_swatches.append({"color": color, "rect": rect})
+            for color in FACE_COLOR_PRESETS:
+                rect = shapes.Rectangle(0, 0, SETTINGS_SWATCH_SIZE, SETTINGS_SWATCH_SIZE, color=color, batch=self.settings_batch)
+                rect.opacity = 230
+                self.face_color_swatches.append({"color": color, "rect": rect})
+            self.font_rgb_box = shapes.Rectangle(0, 0, SETTINGS_BOX_WIDTH, SETTINGS_BOX_HEIGHT, color=(35, 35, 45), batch=self.settings_batch)
+            self.font_rgb_box.opacity = 220
+            self.font_rgb_label = pyglet.text.Label(
+                "",
+                font_size=8,
+                x=0,
+                y=0,
+                color=(230, 230, 230, 230),
+                batch=self.settings_batch,
+            )
+            self.face_rgb_box = shapes.Rectangle(0, 0, SETTINGS_BOX_WIDTH, SETTINGS_BOX_HEIGHT, color=(35, 35, 45), batch=self.settings_batch)
+            self.face_rgb_box.opacity = 220
+            self.face_rgb_label = pyglet.text.Label(
+                "",
+                font_size=8,
+                x=0,
+                y=0,
+                color=(230, 230, 230, 230),
+                batch=self.settings_batch,
+            )
+            self.image_button = shapes.Rectangle(0, 0, SETTINGS_BOX_WIDTH, SETTINGS_BOX_HEIGHT, color=(35, 35, 45), batch=self.settings_batch)
+            self.image_button.opacity = 220
+            self.image_label = pyglet.text.Label(
+                "",
+                font_size=8,
+                x=0,
+                y=0,
+                color=(230, 230, 230, 230),
+                batch=self.settings_batch,
+            )
+            self.image_info_label = pyglet.text.Label(
+                "",
+                font_size=7,
+                x=0,
+                y=0,
+                color=(170, 170, 170, 200),
+                batch=self.settings_batch,
+            )
+            for name in ("crop", "repeat", "scale"):
+                rect = shapes.Rectangle(0, 0, SETTINGS_BUTTON_WIDTH, SETTINGS_BUTTON_HEIGHT, color=(40, 40, 55), batch=self.settings_batch)
+                rect.opacity = 220
+                label = pyglet.text.Label(
+                    name,
+                    font_size=8,
+                    x=0,
+                    y=0,
+                    color=(220, 220, 220, 220),
+                    anchor_x="center",
+                    anchor_y="center",
+                    batch=self.settings_batch,
+                )
+                self.mode_buttons.append({"name": name, "rect": rect, "label": label})
+
+    def _cog_hit(self, x, y):
+        if not self.cog_label:
+            return False
+        half_w = self.cog_label.content_width / 2.0
+        half_h = self.cog_label.content_height / 2.0
+        return (self.cog_label.x - half_w <= x <= self.cog_label.x + half_w) and (
+            self.cog_label.y - half_h <= y <= self.cog_label.y + half_h
+        )
+
+    def _settings_panel_hit(self, x, y):
+        if not self._settings_panel_bounds:
+            return False
+        x0, y0, x1, y1 = self._settings_panel_bounds
+        return x0 <= x <= x1 and y0 <= y <= y1
+
+    def _update_settings_ui(self):
+        self._ensure_settings_ui()
+        pad = SETTINGS_PANEL_PADDING
+        cog_x = self.editor_rect.x + self.editor_rect.width - pad
+        cog_y = self.editor_rect.y + self.editor_rect.height - pad
+        self.cog_label.x = cog_x
+        self.cog_label.y = cog_y
+        if not self.settings_open:
+            self.settings_panel.opacity = 0
+            if self.settings_title:
+                self.settings_title.color = (240, 240, 240, 0)
+            for label in self.settings_labels.values():
+                label.color = (*label.color[:3], 0)
+            for swatch in self.font_color_swatches + self.face_color_swatches:
+                swatch["rect"].opacity = 0
+            for item in (self.font_rgb_box, self.face_rgb_box, self.image_button):
+                if item:
+                    item.opacity = 0
+            for label in (self.font_rgb_label, self.face_rgb_label, self.image_label, self.image_info_label):
+                if label:
+                    label.color = (*label.color[:3], 0)
+            for btn in self.mode_buttons:
+                btn["rect"].opacity = 0
+                btn["label"].color = (*btn["label"].color[:3], 0)
+            return
+
+        panel_x = self.editor_rect.x + self.editor_rect.width - SETTINGS_PANEL_WIDTH - pad
+        panel_y = self.editor_rect.y + self.editor_rect.height - SETTINGS_PANEL_HEIGHT - pad
+        panel_x = max(self.editor_rect.x + pad, panel_x)
+        panel_y = max(self.editor_rect.y + pad, panel_y)
+        self.settings_panel.x = panel_x
+        self.settings_panel.y = panel_y
+        self.settings_panel.width = SETTINGS_PANEL_WIDTH
+        self.settings_panel.height = SETTINGS_PANEL_HEIGHT
+        self.settings_panel.opacity = 235
+        self._settings_panel_bounds = (
+            panel_x,
+            panel_y,
+            panel_x + SETTINGS_PANEL_WIDTH,
+            panel_y + SETTINGS_PANEL_HEIGHT,
+        )
+        x = panel_x + pad
+        y = panel_y + SETTINGS_PANEL_HEIGHT - pad - 6
+        if self.settings_title:
+            self.settings_title.x = x
+            self.settings_title.y = y
+            self.settings_title.color = (240, 240, 240, 230)
+        y -= 20
+        self.settings_labels["font"].x = x
+        self.settings_labels["font"].y = y
+        self.settings_labels["font"].color = (210, 210, 210, 220)
+        y -= 14
+        for idx, swatch in enumerate(self.font_color_swatches):
+            rect = swatch["rect"]
+            rect.x = x + idx * (SETTINGS_SWATCH_SIZE + SETTINGS_SWATCH_GAP)
+            rect.y = y
+            rect.width = SETTINGS_SWATCH_SIZE
+            rect.height = SETTINGS_SWATCH_SIZE
+            rect.opacity = 230
+        y -= SETTINGS_SWATCH_SIZE + 8
+        self.settings_labels["font_rgb"].x = x
+        self.settings_labels["font_rgb"].y = y + 4
+        self.settings_labels["font_rgb"].color = (180, 180, 180, 220)
+        self.font_rgb_box.x = x + 70
+        self.font_rgb_box.y = y
+        self.font_rgb_box.width = SETTINGS_BOX_WIDTH
+        self.font_rgb_box.height = SETTINGS_BOX_HEIGHT
+        self.font_rgb_box.opacity = 230
+        self.font_rgb_label.x = self.font_rgb_box.x + 6
+        self.font_rgb_label.y = self.font_rgb_box.y + 4
+        y -= SETTINGS_BOX_HEIGHT + 12
+        self.settings_labels["face"].x = x
+        self.settings_labels["face"].y = y
+        self.settings_labels["face"].color = (210, 210, 210, 220)
+        y -= 14
+        for idx, swatch in enumerate(self.face_color_swatches):
+            rect = swatch["rect"]
+            rect.x = x + idx * (SETTINGS_SWATCH_SIZE + SETTINGS_SWATCH_GAP)
+            rect.y = y
+            rect.width = SETTINGS_SWATCH_SIZE
+            rect.height = SETTINGS_SWATCH_SIZE
+            rect.opacity = 230
+        y -= SETTINGS_SWATCH_SIZE + 8
+        self.settings_labels["face_rgb"].x = x
+        self.settings_labels["face_rgb"].y = y + 4
+        self.settings_labels["face_rgb"].color = (180, 180, 180, 220)
+        self.face_rgb_box.x = x + 70
+        self.face_rgb_box.y = y
+        self.face_rgb_box.width = SETTINGS_BOX_WIDTH
+        self.face_rgb_box.height = SETTINGS_BOX_HEIGHT
+        self.face_rgb_box.opacity = 230
+        self.face_rgb_label.x = self.face_rgb_box.x + 6
+        self.face_rgb_label.y = self.face_rgb_box.y + 4
+        y -= SETTINGS_BOX_HEIGHT + 12
+        self.settings_labels["image"].x = x
+        self.settings_labels["image"].y = y + 4
+        self.settings_labels["image"].color = (210, 210, 210, 220)
+        self.image_button.x = x + 50
+        self.image_button.y = y
+        self.image_button.width = SETTINGS_BOX_WIDTH
+        self.image_button.height = SETTINGS_BOX_HEIGHT
+        self.image_button.opacity = 230
+        self.image_label.x = self.image_button.x + 6
+        self.image_label.y = self.image_button.y + 4
+        y -= SETTINGS_BOX_HEIGHT + 10
+        self.image_info_label.x = x
+        self.image_info_label.y = y
+        y -= 16
+        self.settings_labels["mode"].x = x
+        self.settings_labels["mode"].y = y + 4
+        self.settings_labels["mode"].color = (180, 180, 180, 220)
+        mode_x = x + 70
+        mode_y = y
+        for idx, btn in enumerate(self.mode_buttons):
+            rect = btn["rect"]
+            rect.x = mode_x + idx * (SETTINGS_BUTTON_WIDTH + 6)
+            rect.y = mode_y
+            rect.width = SETTINGS_BUTTON_WIDTH
+            rect.height = SETTINGS_BUTTON_HEIGHT
+            rect.opacity = 220
+            btn["label"].x = rect.x + rect.width / 2
+            btn["label"].y = rect.y + rect.height / 2
+            btn["label"].color = (220, 220, 220, 220)
+
+        face = self.faces[self.current_face_index]
+        font_rgb_text = self._settings_input_text if self._settings_input_target == "font_rgb" else ",".join(
+            str(c) for c in face.font_color
+        )
+        if face.background_def.get("type") == "color":
+            face_color = parse_color(face.background_def.get("value"))
+        else:
+            face_color = parse_color(DEFAULT_BACKGROUNDS[face.name])
+        face_rgb_text = self._settings_input_text if self._settings_input_target == "face_rgb" else ",".join(
+            str(c) for c in face_color
+        )
+        self.font_rgb_label.text = font_rgb_text
+        self.face_rgb_label.text = face_rgb_text
+        if self._settings_input_target == "font_rgb":
+            self.font_rgb_box.color = (55, 55, 70)
+        else:
+            self.font_rgb_box.color = (35, 35, 45)
+        if self._settings_input_target == "face_rgb":
+            self.face_rgb_box.color = (55, 55, 70)
+        else:
+            self.face_rgb_box.color = (35, 35, 45)
+        image_name = "Select..."
+        image_info = ""
+        if face.background_def.get("type") == "image":
+            image_path = Path(face.background_def.get("value", ""))
+            if image_path.name:
+                image_name = image_path.name
+            if face.background_image():
+                img = face.background_image()
+                width = img.width
+                height = img.height
+                multiples = ", ".join(
+                    f"{width * mult}x{height * mult}" for mult in range(1, 4)
+                )
+                image_info = f"{width}x{height} -> {multiples}"
+        if len(image_name) > 18:
+            image_name = image_name[:15] + "..."
+        self.image_label.text = image_name
+        self.image_info_label.text = image_info
+        if face.background_def.get("type") != "image":
+            self.settings_labels["mode"].color = (180, 180, 180, 0)
+            for btn in self.mode_buttons:
+                btn["rect"].opacity = 0
+                btn["label"].color = (*btn["label"].color[:3], 0)
+        else:
+            selected_mode = face.background_image_mode()
+            for btn in self.mode_buttons:
+                is_selected = btn["name"] == selected_mode
+                btn["rect"].opacity = 220
+                btn["rect"].color = (70, 90, 140) if is_selected else (40, 40, 55)
+                btn["label"].color = (255, 255, 255, 230) if is_selected else (220, 220, 220, 220)
+
+        self._settings_font_rgb_bounds = (
+            self.font_rgb_box.x,
+            self.font_rgb_box.y,
+            self.font_rgb_box.x + self.font_rgb_box.width,
+            self.font_rgb_box.y + self.font_rgb_box.height,
+        )
+        self._settings_face_rgb_bounds = (
+            self.face_rgb_box.x,
+            self.face_rgb_box.y,
+            self.face_rgb_box.x + self.face_rgb_box.width,
+            self.face_rgb_box.y + self.face_rgb_box.height,
+        )
+        self._settings_image_bounds = (
+            self.image_button.x,
+            self.image_button.y,
+            self.image_button.x + self.image_button.width,
+            self.image_button.y + self.image_button.height,
+        )
+
+    def _parse_rgb(self, text):
+        cleaned = text.replace(" ", ",")
+        parts = [part for part in cleaned.split(",") if part]
+        if len(parts) < 3:
+            return None
+        try:
+            values = [max(0, min(255, int(part))) for part in parts[:3]]
+        except ValueError:
+            return None
+        return tuple(values)
+
+    def _apply_font_color(self, rgb):
+        face = self.faces[self.current_face_index]
+        face.set_font_color(rgb)
+        self.config_data["font_colors"][face.name] = list(rgb)
+        save_config(self.config_data)
+
+    def _apply_face_color(self, rgb):
+        face = self.faces[self.current_face_index]
+        hex_value = "#{:02x}{:02x}{:02x}".format(*rgb)
+        face.set_background_def({"type": "color", "value": hex_value})
+        self.config_data["backgrounds"][face.name] = {"type": "color", "value": hex_value}
+        save_config(self.config_data)
+
+    def _apply_rgb_input(self):
+        if not self._settings_input_target:
+            return
+        rgb = self._parse_rgb(self._settings_input_text)
+        if not rgb:
+            self._settings_input_target = None
+            self._settings_input_text = ""
+            return
+        if self._settings_input_target == "font_rgb":
+            self._apply_font_color(rgb)
+        elif self._settings_input_target == "face_rgb":
+            self._apply_face_color(rgb)
+        self._settings_input_target = None
+        self._settings_input_text = ""
+
+    def _select_image_for_face(self):
+        try:
+            from tkinter import Tk, filedialog
+        except Exception:
+            self._toast("Image picker unavailable (tkinter).")
+            return
+        root = Tk()
+        root.withdraw()
+        path = filedialog.askopenfilename(
+            title="Select background image",
+            filetypes=[("Image files", "*.png;*.jpg;*.jpeg;*.bmp;*.gif"), ("All files", "*.*")],
+        )
+        root.destroy()
+        if not path:
+            return
+        face = self.faces[self.current_face_index]
+        bg_def = {"type": "image", "value": path, "mode": face.background_def.get("mode", "scale")}
+        face.set_background_def(bg_def)
+        self.config_data["backgrounds"][face.name] = bg_def
+        save_config(self.config_data)
+
+    def _handle_settings_click(self, x, y):
+        if not self.settings_open or not self._settings_panel_bounds:
+            return False
+        if not self._settings_panel_hit(x, y):
+            return False
+        for swatch in self.font_color_swatches:
+            rect = swatch["rect"]
+            if rect.x <= x <= rect.x + rect.width and rect.y <= y <= rect.y + rect.height:
+                self._apply_font_color(swatch["color"])
+                return True
+        for swatch in self.face_color_swatches:
+            rect = swatch["rect"]
+            if rect.x <= x <= rect.x + rect.width and rect.y <= y <= rect.y + rect.height:
+                self._apply_face_color(swatch["color"])
+                return True
+        if self._settings_font_rgb_bounds:
+            x0, y0, x1, y1 = self._settings_font_rgb_bounds
+            if x0 <= x <= x1 and y0 <= y <= y1:
+                self._settings_input_target = "font_rgb"
+                self._settings_input_text = ""
+                return True
+        if self._settings_face_rgb_bounds:
+            x0, y0, x1, y1 = self._settings_face_rgb_bounds
+            if x0 <= x <= x1 and y0 <= y <= y1:
+                self._settings_input_target = "face_rgb"
+                self._settings_input_text = ""
+                return True
+        if self._settings_image_bounds:
+            x0, y0, x1, y1 = self._settings_image_bounds
+            if x0 <= x <= x1 and y0 <= y <= y1:
+                self._select_image_for_face()
+                return True
+        face = self.faces[self.current_face_index]
+        if face.background_def.get("type") == "image":
+            for btn in self.mode_buttons:
+                rect = btn["rect"]
+                if rect.x <= x <= rect.x + rect.width and rect.y <= y <= rect.y + rect.height:
+                    face.background_def["mode"] = btn["name"]
+                    self.config_data["backgrounds"][face.name] = dict(face.background_def)
+                    save_config(self.config_data)
+                    return True
+        return True
+
+    def _draw_face_background_image(self, face, image):
+        mode = face.background_image_mode()
+        if mode == "repeat":
+            self._draw_image_tiled(image)
+        elif mode == "crop":
+            self._draw_image_cropped(image)
+        else:
+            self._draw_image_scaled(image)
+
+    def _draw_image_scaled(self, image):
+        gl.glEnable(gl.GL_SCISSOR_TEST)
+        gl.glScissor(
+            int(self.editor_rect.x),
+            int(self.editor_rect.y),
+            int(self.editor_rect.width),
+            int(self.editor_rect.height),
+        )
+        image.blit(
+            self.editor_rect.x,
+            self.editor_rect.y,
+            width=self.editor_rect.width,
+            height=self.editor_rect.height,
+        )
+        gl.glDisable(gl.GL_SCISSOR_TEST)
+
+    def _draw_image_cropped(self, image):
+        scale = max(self.editor_rect.width / image.width, self.editor_rect.height / image.height)
+        draw_w = int(image.width * scale)
+        draw_h = int(image.height * scale)
+        draw_x = int(self.editor_rect.x + (self.editor_rect.width - draw_w) / 2)
+        draw_y = int(self.editor_rect.y + (self.editor_rect.height - draw_h) / 2)
+        gl.glEnable(gl.GL_SCISSOR_TEST)
+        gl.glScissor(
+            int(self.editor_rect.x),
+            int(self.editor_rect.y),
+            int(self.editor_rect.width),
+            int(self.editor_rect.height),
+        )
+        image.blit(draw_x, draw_y, width=draw_w, height=draw_h)
+        gl.glDisable(gl.GL_SCISSOR_TEST)
+
+    def _draw_image_tiled(self, image):
+        gl.glEnable(gl.GL_SCISSOR_TEST)
+        gl.glScissor(
+            int(self.editor_rect.x),
+            int(self.editor_rect.y),
+            int(self.editor_rect.width),
+            int(self.editor_rect.height),
+        )
+        start_x = int(self.editor_rect.x)
+        start_y = int(self.editor_rect.y)
+        end_x = int(self.editor_rect.x + self.editor_rect.width)
+        end_y = int(self.editor_rect.y + self.editor_rect.height)
+        step_x = max(1, image.width)
+        step_y = max(1, image.height)
+        for tx in range(start_x, end_x, step_x):
+            for ty in range(start_y, end_y, step_y):
+                image.blit(tx, ty)
+        gl.glDisable(gl.GL_SCISSOR_TEST)
 
     def _make_topmost(self):
         try:
@@ -767,7 +1438,7 @@ class NotesCubedApp(pyglet.window.Window):
             self.editor_rect.x = int((self.width - width) / 2)
             self.editor_rect.y = int((self.height - height) / 2)
         self.editor_rect.color = color
-        self.editor_rect.opacity = 210 if self.edit_mode else 0
+        self.editor_rect.opacity = 255 if self.edit_mode else 0
         self._update_labels()
         if self.toast_label:
             if time.time() <= self._toast_until:
@@ -777,20 +1448,22 @@ class NotesCubedApp(pyglet.window.Window):
         if self.edit_mode:
             bg_image = active_face.background_image()
             if bg_image:
-                bg_image.blit(
-                    self.editor_rect.x,
-                    self.editor_rect.y,
-                    width=self.editor_rect.width,
-                    height=self.editor_rect.height,
-                )
+                self._draw_face_background_image(active_face, bg_image)
             self.ui_batch.draw()
             pad = 12
             active_face.layout.x = self.editor_rect.x + pad
             active_face.layout.y = self.editor_rect.y + pad
             active_face.layout.width = max(1, self.editor_rect.width - pad * 2)
             active_face.layout.height = max(1, self.editor_rect.height - pad * 2)
+            self._apply_pending_caret()
             active_face.layout.draw()
+            self._update_scrollbar(active_face, pad)
+            self._draw_scrollbar()
+            self._update_settings_ui()
+            self.settings_batch.draw()
         else:
+            self.settings_open = False
+            self._settings_input_target = None
             # Draw labels (and any active toast); editor rect is fully transparent in rotate mode.
             self.ui_batch.draw()
 
@@ -807,6 +1480,16 @@ class NotesCubedApp(pyglet.window.Window):
     def on_mouse_press(self, x, y, button, modifiers):
         if button != mouse.LEFT:
             return
+        if self.settings_open and self._handle_settings_click(x, y):
+            return
+        if self.edit_mode and self._cog_hit(x, y):
+            self.settings_open = not self.settings_open
+            self._settings_input_target = None
+            self._settings_input_text = ""
+            return
+        if self.settings_open and not self._settings_panel_hit(x, y) and not self._cog_hit(x, y):
+            self.settings_open = False
+            self._settings_input_target = None
         face_hit = self._face_key_hit(x, y)
         if face_hit:
             self._snap_to_face(face_hit)
@@ -814,14 +1497,30 @@ class NotesCubedApp(pyglet.window.Window):
             self._return_to_edit_when_aligned = False
             self.dragging = False
             return
-        if self._point_in_editor(x, y):
+        if self.edit_mode and self._point_in_editor(x, y):
             self.edit_mode = True
             self._return_to_edit_when_aligned = False
             self._activate_caret(x, y, button, modifiers)
             return
+        if not self._point_in_cube(x, y):
+            self.edit_mode = False
+            self._return_to_edit_when_aligned = False
+            self.dragging = True
+            self._drag_started_outside_cube = True
+            self.last_mouse = (x, y)
+            self._drag_vector = self._arcball_vector(x, y)
+            return
+        if not self.edit_mode:
+            self.edit_mode = True
+            self._return_to_edit_when_aligned = False
+            self.dragging = False
+            self._drag_started_outside_cube = False
+            self._pending_edit_click = (x, y)
+            return
         self.edit_mode = False
         self._return_to_edit_when_aligned = False
         self.dragging = True
+        self._drag_started_outside_cube = False
         self.last_mouse = (x, y)
         self._drag_vector = self._arcball_vector(x, y)
 
@@ -857,8 +1556,12 @@ class NotesCubedApp(pyglet.window.Window):
             self._drag_vector = None
             face_name = self._nearest_face()
             self._snap_to_face(face_name)
-            self.edit_mode = True
-            self._return_to_edit_when_aligned = False
+            if not self._drag_started_outside_cube:
+                self.edit_mode = True
+                self._return_to_edit_when_aligned = False
+            else:
+                self.edit_mode = False
+            self._drag_started_outside_cube = False
 
     def on_mouse_scroll(self, x, y, scroll_x, scroll_y):
         if not self.edit_mode:
@@ -870,6 +1573,10 @@ class NotesCubedApp(pyglet.window.Window):
         active_face.scroll(-scroll_y * 20)
 
     def on_text(self, text):
+        if self.settings_open and self._settings_input_target:
+            if text.isdigit() or text in {",", " "}:
+                self._settings_input_text += text
+            return
         if self.edit_mode:
             active_face = self.faces[self.current_face_index]
             if active_face.caret:
@@ -877,6 +1584,8 @@ class NotesCubedApp(pyglet.window.Window):
                 active_face.mark_preview_dirty()
 
     def on_text_motion(self, motion):
+        if self.settings_open and self._settings_input_target:
+            return
         if self.edit_mode:
             active_face = self.faces[self.current_face_index]
             if active_face.caret:
@@ -884,6 +1593,8 @@ class NotesCubedApp(pyglet.window.Window):
                 active_face.mark_preview_dirty()
 
     def on_text_motion_select(self, motion):
+        if self.settings_open and self._settings_input_target:
+            return
         if self.edit_mode:
             active_face = self.faces[self.current_face_index]
             if active_face.caret:
@@ -891,9 +1602,21 @@ class NotesCubedApp(pyglet.window.Window):
                 active_face.mark_preview_dirty()
 
     def on_key_press(self, symbol, modifiers):
+        if self.settings_open and self._settings_input_target:
+            if symbol in (key.ENTER, key.NUM_ENTER):
+                self._apply_rgb_input()
+            elif symbol == key.BACKSPACE:
+                self._settings_input_text = self._settings_input_text[:-1]
+            elif symbol == key.ESCAPE:
+                self._settings_input_target = None
+                self._settings_input_text = ""
+            return
+        if not self.edit_mode and symbol in (key.LEFT, key.RIGHT, key.UP, key.DOWN):
+            self._rotate_via_keys(symbol, return_to_edit=False, play_sound=True)
+            return
         if modifiers & key.MOD_ALT:
             if symbol in (key.LEFT, key.RIGHT, key.UP, key.DOWN):
-                self._rotate_via_keys(symbol)
+                self._rotate_via_keys(symbol, return_to_edit=True, play_sound=True)
                 return
         if symbol == key.F12:
             self._queue_screenshot()
@@ -902,6 +1625,10 @@ class NotesCubedApp(pyglet.window.Window):
             self.save_all("manual save")
             return
         if symbol == key.ESCAPE:
+            if self.settings_open:
+                self.settings_open = False
+                self._settings_input_target = None
+                return
             self.edit_mode = not self.edit_mode
             if self.edit_mode:
                 self._return_to_edit_when_aligned = False
@@ -913,6 +1640,40 @@ class NotesCubedApp(pyglet.window.Window):
             self.editor_rect.x <= x <= self.editor_rect.x + self.editor_rect.width
             and self.editor_rect.y <= y <= self.editor_rect.y + self.editor_rect.height
         )
+
+    def _cube_bbox_on_screen(self, mvp):
+        pts = []
+        positions = self.cube.positions
+        for i in range(0, len(positions), 3):
+            x, y, z = positions[i], positions[i + 1], positions[i + 2]
+            clip = mvp @ Vec4(x, y, z, 1.0)
+            if clip.w == 0:
+                continue
+            ndc_x = clip.x / clip.w
+            ndc_y = clip.y / clip.w
+            sx = (ndc_x * 0.5 + 0.5) * self.width
+            sy = (ndc_y * 0.5 + 0.5) * self.height
+            pts.append((sx, sy))
+        if not pts:
+            return None
+        xs = [p[0] for p in pts]
+        ys = [p[1] for p in pts]
+        x0 = max(0, min(xs))
+        y0 = max(0, min(ys))
+        x1 = min(self.width, max(xs))
+        y1 = min(self.height, max(ys))
+        if x1 - x0 < 10 or y1 - y0 < 10:
+            return None
+        return x0, y0, x1, y1
+
+    def _point_in_cube(self, x, y):
+        if self._mvp_3d is None:
+            return self._point_in_editor(x, y)
+        bbox = self._cube_bbox_on_screen(self._mvp_3d)
+        if not bbox:
+            return self._point_in_editor(x, y)
+        x0, y0, x1, y1 = bbox
+        return x0 <= x <= x1 and y0 <= y <= y1
 
     def _activate_caret(self, x, y, button, modifiers):
         active_face = self.faces[self.current_face_index]
@@ -1051,7 +1812,7 @@ class NotesCubedApp(pyglet.window.Window):
         self._build_editor_overlay()
         self._build_labels()
 
-    def _rotate_via_keys(self, symbol):
+    def _rotate_via_keys(self, symbol, return_to_edit=True, play_sound=False):
         name = self.faces[self.current_face_index].name
         ring = ["front", "right", "back", "left"]
         if symbol in (key.LEFT, key.RIGHT):
@@ -1067,8 +1828,18 @@ class NotesCubedApp(pyglet.window.Window):
             self._snap_to_face("top")
         elif symbol == key.DOWN:
             self._snap_to_face("bottom")
-        self.edit_mode = True
-        self._return_to_edit_when_aligned = False
+        if play_sound:
+            self._play_woosh()
+        if return_to_edit:
+            self.edit_mode = True
+            self._return_to_edit_when_aligned = False
+
+    def _play_woosh(self):
+        try:
+            envelope = synthesis.LinearDecayEnvelope(peak=0.35)
+            synthesis.WhiteNoise(0.18, envelope=envelope).play()
+        except Exception:
+            pass
 
     def update(self, dt):
         if time.time() - self.last_save > AUTOSAVE_SECONDS:
@@ -1092,7 +1863,12 @@ def headless_test():
     ensure_data_folder()
     faces = []
     for name in FACE_NAMES:
-        face = FaceState(name, DATA_DIR / f"{name}.txt", config["backgrounds"].get(name))
+        face = FaceState(
+            name,
+            DATA_DIR / f"{name}.txt",
+            config["backgrounds"].get(name),
+            config["font_colors"].get(name),
+        )
         faces.append(face)
     for face in faces:
         face.save()
