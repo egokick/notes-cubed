@@ -2168,9 +2168,18 @@ class NotesCubedApp(pyglet.window.Window):
                 face.render_preview_to_texture(self, preview_size)
 
     def _preview_render_size(self):
-        size = int(min(self.width, self.height) * EDITOR_SCALE)
-        size = min(size, FACE_PREVIEW_SIZE)
-        return max(128, size)
+        fallback = int(min(self.width, self.height) * EDITOR_SCALE)
+        aspect = self.width / float(self.height or 1)
+        projection = pyglet.math.Mat4.perspective_projection(aspect, 0.1, 100.0, 60.0)
+        rotation = self._rotation_for_face("front")
+        view = pyglet.math.Mat4.look_at(Vec3(0, 0, 4.0), Vec3(0, 0, 0), Vec3(0, 1, 0)) @ rotation
+        mvp = projection @ view
+        bbox = self._face_bbox_on_screen("front", mvp)
+        if bbox:
+            x0, y0, x1, y1 = bbox
+            side = int(max(1, min(x1 - x0, y1 - y0)))
+            return max(128, side)
+        return max(128, fallback)
 
     def _rotation_angles(self):
         forward = rotation_matrix_apply((0, 0, 1), self.rotation)
