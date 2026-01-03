@@ -1839,6 +1839,19 @@ class NotesCubedApp(pyglet.window.Window):
     def on_mouse_press(self, x, y, button, modifiers):
         if button != mouse.LEFT:
             return
+        if self.auto_spin:
+            if self._spin_key_hit(x, y):
+                self.auto_spin = False
+                self.edit_mode = True
+                return
+            if not self._point_in_cube(x, y):
+                now = time.time()
+                if now - self._last_outside_click_time <= 0.35:
+                    self._last_outside_click_time = 0.0
+                    self.minimize()
+                else:
+                    self._last_outside_click_time = now
+            return
         if self.settings_open and self._handle_settings_click(x, y):
             return
         if self.edit_mode and self._cog_hit(x, y):
