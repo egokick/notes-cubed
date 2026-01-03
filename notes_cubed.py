@@ -399,6 +399,8 @@ class FaceState:
         self.layout = None
         self.caret = None
         self._bg_image = None
+        self._bg_player = None
+        self._bg_sprite = None
         self.preview_dirty = True
         self._preview_last_text = None
         self._preview_texture = None
@@ -407,6 +409,9 @@ class FaceState:
         self._preview_doc = None
         self._preview_layout = None
         self._preview_bg = None
+        self.undo_stack = []
+        self.redo_stack = []
+        self._history_suspended = False
         self._load_background_asset()
 
     def _load_text(self):
@@ -418,13 +423,13 @@ class FaceState:
     def save(self):
         self.path.write_text(self.document.text, encoding="utf-8")
 
-    def bind_layout(self, width, height):
+    def bind_layout(self, width, height, window=None):
         self.layout = pyglet.text.layout.IncrementalTextLayout(
             self.document, width=width, height=height, multiline=True, wrap_lines=False
         )
         self.layout.x = EDITOR_MARGIN
         self.layout.y = EDITOR_MARGIN
-        self.caret = pyglet.text.caret.Caret(self.layout, color=(*self.font_color, 255))
+        self.caret = pyglet.text.caret.Caret(self.layout, color=(*self.font_color, 255), window=window)
 
     def resize_layout(self, width, height):
         if not self.layout:
@@ -526,7 +531,68 @@ class FaceState:
         return parse_color(DEFAULT_BACKGROUNDS[self.name])
 
     def background_image(self):
+        if self._bg_player:
+            try:
+                return self._bg_player.get_texture()
+            except Exception:
+                return None
+        if self._bg_sprite:
+            return self._bg_sprite
         return self._bg_image
+
+    def snapshot(self):
+        position = self.caret.position if self.caret else len(self.document.text)
+        mark = self.caret.mark if self.caret else None
+        return {"text": self.document.text, "position": position, "mark": mark}
+
+    def record_undo(self):
+        if self._history_suspended:
+            return
+        snapshot = self.snapshot()
+        if self.undo_stack and self.undo_stack[-1] == snapshot:
+            return
+        self.undo_stack.append(snapshot)
+        if len(self.undo_stack) > 100:
+            self.undo_stack.pop(0)
+        self.redo_stack.clear()
+
+    def _apply_state(self, state):
+        self._history_suspended = True
+        text = state["text"]
+        self.document.text = text
+        self.document.set_style(
+            0,
+            len(self.document.text),
+            {"font_name": "Consolas", "font_size": 14, "color": (*self.font_color, 255)},
+        )
+        if self.caret:
+            self.caret.position = min(state["position"], len(text))
+            mark = state["mark"]
+            if mark is not None:
+                mark = min(mark, len(text))
+            self.caret.mark = mark
+        self._history_suspended = False
+        self.preview_dirty = True
+
+    def undo(self):
+        if not self.undo_stack:
+            return
+        current = self.snapshot()
+        state = self.undo_stack.pop()
+        self.redo_stack.append(current)
+        if len(self.redo_stack) > 100:
+            self.redo_stack.pop(0)
+        self._apply_state(state)
+
+    def redo(self):
+        if not self.redo_stack:
+            return
+        current = self.snapshot()
+        state = self.redo_stack.pop()
+        self.undo_stack.append(current)
+        if len(self.undo_stack) > 100:
+            self.undo_stack.pop(0)
+        self._apply_state(state)
 
     def background_image_mode(self):
         if self.background_def.get("type") == "image":
@@ -564,15 +630,57 @@ class FaceState:
     def _load_background_asset(self):
         if self.background_def.get("type") != "image":
             self._bg_image = None
+            if self._bg_player:
+                try:
+                    self._bg_player.pause()
+                except Exception:
+                    pass
+            self._bg_player = None
+            self._bg_sprite = None
             return
         path = Path(self.background_def.get("value", ""))
         if not path.exists():
             self._bg_image = None
+            if self._bg_player:
+                try:
+                    self._bg_player.pause()
+                except Exception:
+                    pass
+            self._bg_player = None
+            self._bg_sprite = None
             return
+        if self._bg_player:
+            try:
+                self._bg_player.pause()
+            except Exception:
+                pass
+            self._bg_player = None
+        self._bg_sprite = None
         try:
-            self._bg_image = pyglet.image.load(path.as_posix())
+            ext = path.suffix.lower()
+            if ext in {".gif", ".mp4", ".mov", ".m4v", ".webm", ".avi"}:
+                try:
+                    source = pyglet.media.load(path.as_posix())
+                    player = pyglet.media.Player()
+                    player.queue(source)
+                    player.volume = 0.0
+                    if hasattr(player, "loop"):
+                        player.loop = True
+                    player.play()
+                    self._bg_player = player
+                    self._bg_image = None
+                    return
+                except Exception:
+                    self._bg_player = None
+            loaded = pyglet.image.load(path.as_posix())
+            if isinstance(loaded, pyglet.image.Animation):
+                self._bg_sprite = pyglet.sprite.Sprite(loaded)
+                self._bg_image = None
+            else:
+                self._bg_image = loaded
         except Exception:
             self._bg_image = None
+            self._bg_sprite = None
 
 
 class NotesCubedApp(pyglet.window.Window):
@@ -599,7 +707,7 @@ class NotesCubedApp(pyglet.window.Window):
                 config["backgrounds"].get(name),
                 config["font_colors"].get(name),
             )
-            face.bind_layout(self.width - 2 * EDITOR_MARGIN, self.height - 2 * EDITOR_MARGIN)
+            face.bind_layout(self.width - 2 * EDITOR_MARGIN, self.height - 2 * EDITOR_MARGIN, window=self)
             self.faces.append(face)
         self.current_face_index = max(0, min(len(self.faces) - 1, config.get("last_face", 0)))
 
@@ -690,7 +798,6 @@ class NotesCubedApp(pyglet.window.Window):
                 width,
                 height,
                 color=(color[0], color[1], color[2]),
-                batch=self.ui_batch,
             )
         else:
             self.editor_rect.x = int((self.width - width) / 2)
@@ -766,6 +873,13 @@ class NotesCubedApp(pyglet.window.Window):
     def _update_face_keys(self):
         right = self.width - FACE_KEY_MARGIN
         top = self.height - FACE_KEY_MARGIN
+        if self._mvp_3d is not None:
+            bbox = self._cube_bbox_on_screen(self._mvp_3d)
+            if bbox:
+                _x0, _y0, x1, y1 = bbox
+                desired_left = x1 + FACE_KEY_MARGIN
+                right = min(self.width - FACE_KEY_MARGIN, desired_left + FACE_KEY_WIDTH)
+                top = min(self.height - FACE_KEY_MARGIN, y1 + FACE_KEY_MARGIN)
         current_name = self.faces[self.current_face_index].name
         face_lookup = {face.name: face for face in self.faces}
         for index, item in enumerate(self.face_key_items):
@@ -1144,8 +1258,12 @@ class NotesCubedApp(pyglet.window.Window):
                 image_name = image_path.name
             if face.background_image():
                 img = face.background_image()
-                width = img.width
-                height = img.height
+                if isinstance(img, sprite.Sprite):
+                    width = img.image.width
+                    height = img.image.height
+                else:
+                    width = img.width
+                    height = img.height
                 multiples = ", ".join(
                     f"{width * mult}x{height * mult}" for mult in range(1, 4)
                 )
@@ -1235,7 +1353,7 @@ class NotesCubedApp(pyglet.window.Window):
         root.withdraw()
         path = filedialog.askopenfilename(
             title="Select background image",
-            filetypes=[("Image files", "*.png;*.jpg;*.jpeg;*.bmp;*.gif"), ("All files", "*.*")],
+            filetypes=[("Media files", "*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.mp4;*.mov;*.m4v;*.webm;*.avi"), ("All files", "*.*")],
         )
         root.destroy()
         if not path:
@@ -1290,6 +1408,9 @@ class NotesCubedApp(pyglet.window.Window):
         return True
 
     def _draw_face_background_image(self, face, image):
+        if isinstance(image, sprite.Sprite):
+            self._draw_sprite_background(face, image)
+            return
         mode = face.background_image_mode()
         if mode == "repeat":
             self._draw_image_tiled(image)
@@ -1297,6 +1418,85 @@ class NotesCubedApp(pyglet.window.Window):
             self._draw_image_cropped(image)
         else:
             self._draw_image_scaled(image)
+
+    def _draw_sprite_background(self, face, image):
+        mode = face.background_image_mode()
+        if mode == "repeat":
+            self._draw_sprite_tiled(image)
+        elif mode == "crop":
+            self._draw_sprite_cropped(image)
+        else:
+            self._draw_sprite_scaled(image)
+
+    def _draw_sprite_scaled(self, image):
+        if image.image.width <= 0 or image.image.height <= 0:
+            return
+        image.scale_x = self.editor_rect.width / image.image.width
+        image.scale_y = self.editor_rect.height / image.image.height
+        image.x = self.editor_rect.x
+        image.y = self.editor_rect.y
+        gl.glEnable(gl.GL_SCISSOR_TEST)
+        gl.glScissor(
+            int(self.editor_rect.x),
+            int(self.editor_rect.y),
+            int(self.editor_rect.width),
+            int(self.editor_rect.height),
+        )
+        image.draw()
+        gl.glDisable(gl.GL_SCISSOR_TEST)
+
+    def _draw_sprite_cropped(self, image):
+        if image.image.width <= 0 or image.image.height <= 0:
+            return
+        scale = max(self.editor_rect.width / image.image.width, self.editor_rect.height / image.image.height)
+        draw_w = int(image.image.width * scale)
+        draw_h = int(image.image.height * scale)
+        image.scale_x = scale
+        image.scale_y = scale
+        image.x = int(self.editor_rect.x + (self.editor_rect.width - draw_w) / 2)
+        image.y = int(self.editor_rect.y + (self.editor_rect.height - draw_h) / 2)
+        gl.glEnable(gl.GL_SCISSOR_TEST)
+        gl.glScissor(
+            int(self.editor_rect.x),
+            int(self.editor_rect.y),
+            int(self.editor_rect.width),
+            int(self.editor_rect.height),
+        )
+        image.draw()
+        gl.glDisable(gl.GL_SCISSOR_TEST)
+
+    def _draw_sprite_tiled(self, image):
+        if image.image.width <= 0 or image.image.height <= 0:
+            return
+        original_x = image.x
+        original_y = image.y
+        original_scale_x = image.scale_x
+        original_scale_y = image.scale_y
+        image.scale_x = 1.0
+        image.scale_y = 1.0
+        gl.glEnable(gl.GL_SCISSOR_TEST)
+        gl.glScissor(
+            int(self.editor_rect.x),
+            int(self.editor_rect.y),
+            int(self.editor_rect.width),
+            int(self.editor_rect.height),
+        )
+        start_x = int(self.editor_rect.x)
+        start_y = int(self.editor_rect.y)
+        end_x = int(self.editor_rect.x + self.editor_rect.width)
+        end_y = int(self.editor_rect.y + self.editor_rect.height)
+        step_x = max(1, image.image.width)
+        step_y = max(1, image.image.height)
+        for tx in range(start_x, end_x, step_x):
+            for ty in range(start_y, end_y, step_y):
+                image.x = tx
+                image.y = ty
+                image.draw()
+        gl.glDisable(gl.GL_SCISSOR_TEST)
+        image.x = original_x
+        image.y = original_y
+        image.scale_x = original_scale_x
+        image.scale_y = original_scale_y
 
     def _draw_image_scaled(self, image):
         gl.glEnable(gl.GL_SCISSOR_TEST)
@@ -1446,6 +1646,8 @@ class NotesCubedApp(pyglet.window.Window):
             else:
                 self.toast_label.color = (240, 240, 240, 0)
         if self.edit_mode:
+            if self.editor_rect.opacity > 0:
+                self.editor_rect.draw()
             bg_image = active_face.background_image()
             if bg_image:
                 self._draw_face_background_image(active_face, bg_image)
@@ -1580,6 +1782,7 @@ class NotesCubedApp(pyglet.window.Window):
         if self.edit_mode:
             active_face = self.faces[self.current_face_index]
             if active_face.caret:
+                active_face.record_undo()
                 active_face.caret.on_text(text)
                 active_face.mark_preview_dirty()
 
@@ -1589,8 +1792,11 @@ class NotesCubedApp(pyglet.window.Window):
         if self.edit_mode:
             active_face = self.faces[self.current_face_index]
             if active_face.caret:
+                if motion in (key.MOTION_BACKSPACE, key.MOTION_DELETE, key.MOTION_PASTE):
+                    active_face.record_undo()
                 active_face.caret.on_text_motion(motion)
-                active_face.mark_preview_dirty()
+                if motion in (key.MOTION_BACKSPACE, key.MOTION_DELETE, key.MOTION_PASTE):
+                    active_face.mark_preview_dirty()
 
     def on_text_motion_select(self, motion):
         if self.settings_open and self._settings_input_target:
@@ -1617,6 +1823,21 @@ class NotesCubedApp(pyglet.window.Window):
         if modifiers & key.MOD_ALT:
             if symbol in (key.LEFT, key.RIGHT, key.UP, key.DOWN):
                 self._rotate_via_keys(symbol, return_to_edit=True, play_sound=True)
+                return
+        if self.edit_mode and (modifiers & key.MOD_CTRL):
+            active_face = self.faces[self.current_face_index]
+            if symbol == key.A:
+                if active_face.caret:
+                    active_face.caret.select_all()
+                return
+            if symbol == key.Z:
+                if modifiers & key.MOD_SHIFT:
+                    active_face.redo()
+                else:
+                    active_face.undo()
+                return
+            if symbol == key.Y:
+                active_face.redo()
                 return
         if symbol == key.F12:
             self._queue_screenshot()
@@ -1815,6 +2036,7 @@ class NotesCubedApp(pyglet.window.Window):
     def _rotate_via_keys(self, symbol, return_to_edit=True, play_sound=False):
         name = self.faces[self.current_face_index].name
         ring = ["front", "right", "back", "left"]
+        vertical_ring = ["front", "top", "back", "bottom"]
         if symbol in (key.LEFT, key.RIGHT):
             if name not in ring:
                 name = "front"
@@ -1825,9 +2047,17 @@ class NotesCubedApp(pyglet.window.Window):
                 idx = (idx - 1) % len(ring)
             self._snap_to_face(ring[idx])
         elif symbol == key.UP:
-            self._snap_to_face("top")
+            if name not in vertical_ring:
+                name = "front"
+            idx = vertical_ring.index(name)
+            idx = (idx + 1) % len(vertical_ring)
+            self._snap_to_face(vertical_ring[idx])
         elif symbol == key.DOWN:
-            self._snap_to_face("bottom")
+            if name not in vertical_ring:
+                name = "front"
+            idx = vertical_ring.index(name)
+            idx = (idx - 1) % len(vertical_ring)
+            self._snap_to_face(vertical_ring[idx])
         if play_sound:
             self._play_woosh()
         if return_to_edit:
