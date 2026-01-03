@@ -37,11 +37,13 @@ EDITOR_SCALE = 0.72  # fraction of window size used by editor overlay
 AUTOSAVE_SECONDS = 30
 ROTATE_SENSITIVITY = 2.0
 FACE_PREVIEW_SIZE = 512
-FACE_PREVIEW_PADDING = 18
+FACE_PREVIEW_PADDING = 12
 FACE_KEY_WIDTH = 120
 FACE_KEY_HEIGHT = 22
 FACE_KEY_SPACING = 6
 FACE_KEY_MARGIN = 18
+AUTO_SPIN_SPEED = 0.35
+AUTO_SPIN_TILT_DEGREES = 12.0
 SCROLLBAR_WIDTH = 4
 SCROLLBAR_MARGIN = 10
 SCROLLBAR_MIN_HEIGHT = 24
@@ -409,6 +411,7 @@ class FaceState:
         self._preview_doc = None
         self._preview_layout = None
         self._preview_bg = None
+        self._preview_size = None
         self.undo_stack = []
         self.redo_stack = []
         self._history_suspended = False
@@ -425,7 +428,7 @@ class FaceState:
 
     def bind_layout(self, width, height, window=None):
         self.layout = pyglet.text.layout.IncrementalTextLayout(
-            self.document, width=width, height=height, multiline=True, wrap_lines=False
+            self.document, width=width, height=height, multiline=True, wrap_lines=True
         )
         self.layout.x = EDITOR_MARGIN
         self.layout.y = EDITOR_MARGIN
@@ -436,6 +439,7 @@ class FaceState:
             return
         self.layout.width = width
         self.layout.height = height
+        self.layout.wrap_lines = True
         self.layout.x = EDITOR_MARGIN
         self.layout.y = EDITOR_MARGIN
 
@@ -445,18 +449,21 @@ class FaceState:
     def preview_texture(self):
         return self._preview_texture
 
-    def _ensure_preview_resources(self):
-        if self._preview_texture is not None:
+    def _ensure_preview_resources(self, size):
+        if size <= 0:
             return
-        self._preview_texture = pyglet.image.Texture.create(FACE_PREVIEW_SIZE, FACE_PREVIEW_SIZE)
+        if self._preview_texture is not None and self._preview_size == size:
+            return
+        self._preview_size = size
+        self._preview_texture = pyglet.image.Texture.create(size, size)
         self._preview_fbo = Framebuffer()
         self._preview_fbo.attach_texture(self._preview_texture)
         self._preview_batch = pyglet.graphics.Batch()
         self._preview_bg = shapes.Rectangle(
             0,
             0,
-            FACE_PREVIEW_SIZE,
-            FACE_PREVIEW_SIZE,
+            size,
+            size,
             color=(0, 0, 0),
             batch=self._preview_batch,
         )
@@ -471,15 +478,17 @@ class FaceState:
             self._preview_doc,
             x=FACE_PREVIEW_PADDING,
             y=FACE_PREVIEW_PADDING,
-            width=FACE_PREVIEW_SIZE - FACE_PREVIEW_PADDING * 2,
-            height=FACE_PREVIEW_SIZE - FACE_PREVIEW_PADDING * 2,
+            width=size - FACE_PREVIEW_PADDING * 2,
+            height=size - FACE_PREVIEW_PADDING * 2,
             multiline=True,
             wrap_lines=True,
             batch=self._preview_batch,
         )
 
-    def render_preview_to_texture(self, window):
-        self._ensure_preview_resources()
+    def render_preview_to_texture(self, window, size):
+        self._ensure_preview_resources(size)
+        if self._preview_size is None:
+            return
         preview_text = self.document.text
         if preview_text != self._preview_last_text:
             self._preview_last_text = preview_text
@@ -500,14 +509,16 @@ class FaceState:
 
         try:
             self._preview_fbo.bind()
-            gl.glViewport(0, 0, FACE_PREVIEW_SIZE, FACE_PREVIEW_SIZE)
+            gl.glViewport(0, 0, self._preview_size, self._preview_size)
             gl.glDisable(gl.GL_DEPTH_TEST)
             gl.glEnable(gl.GL_BLEND)
             gl.glBlendFunc(770, 771)  # SRC_ALPHA, ONE_MINUS_SRC_ALPHA
             gl.glClearColor(0.0, 0.0, 0.0, 0.0)
             gl.glClear(gl.GL_COLOR_BUFFER_BIT)
 
-            window.projection = pyglet.math.Mat4.orthogonal_projection(0, FACE_PREVIEW_SIZE, 0, FACE_PREVIEW_SIZE, -1, 1)
+            window.projection = pyglet.math.Mat4.orthogonal_projection(
+                0, self._preview_size, 0, self._preview_size, -1, 1
+            )
             window.view = pyglet.math.Mat4()
             self._preview_batch.draw()
         finally:
@@ -728,6 +739,9 @@ class NotesCubedApp(pyglet.window.Window):
         self.mode_label = None
         self.toast_label = None
         self.face_key_items = []
+        self.spin_key_item = None
+        self.auto_spin = False
+        self.auto_spin_speed = AUTO_SPIN_SPEED
         self.cog_label = None
         self.settings_panel = None
         self.settings_title = None
@@ -840,6 +854,26 @@ class NotesCubedApp(pyglet.window.Window):
         return face_name.capitalize()
 
     def _build_face_keys(self):
+        if self.spin_key_item is None:
+            rect = shapes.Rectangle(
+                0,
+                0,
+                FACE_KEY_WIDTH,
+                FACE_KEY_HEIGHT,
+                color=(40, 40, 50),
+                batch=self.ui_batch,
+            )
+            label = pyglet.text.Label(
+                "⟳",
+                font_size=11,
+                x=0,
+                y=0,
+                anchor_x="center",
+                anchor_y="center",
+                color=(230, 230, 230, 230),
+                batch=self.ui_batch,
+            )
+            self.spin_key_item = {"rect": rect, "label": label}
         if not self.face_key_items:
             for face_name in FACE_NAMES:
                 rect = shapes.Rectangle(
@@ -882,11 +916,24 @@ class NotesCubedApp(pyglet.window.Window):
                 top = min(self.height - FACE_KEY_MARGIN, y1 + FACE_KEY_MARGIN)
         current_name = self.faces[self.current_face_index].name
         face_lookup = {face.name: face for face in self.faces}
+        if self.spin_key_item:
+            rect = self.spin_key_item["rect"]
+            label = self.spin_key_item["label"]
+            rect.x = right - FACE_KEY_WIDTH
+            rect.y = top - FACE_KEY_HEIGHT
+            label.x = rect.x + rect.width / 2
+            label.y = rect.y + rect.height / 2
+            if self.auto_spin:
+                rect.color = (90, 120, 160)
+                label.color = (255, 255, 255, 240)
+            else:
+                rect.color = (40, 40, 50)
+                label.color = (230, 230, 230, 220)
         for index, item in enumerate(self.face_key_items):
             rect = item["rect"]
             label = item["label"]
             rect.x = right - FACE_KEY_WIDTH
-            rect.y = top - (FACE_KEY_HEIGHT + FACE_KEY_SPACING) * index - FACE_KEY_HEIGHT
+            rect.y = top - (FACE_KEY_HEIGHT + FACE_KEY_SPACING) * (index + 1) - FACE_KEY_HEIGHT
             label.x = rect.x + 8
             label.y = rect.y + FACE_KEY_HEIGHT / 2
             face_state = face_lookup.get(item["name"])
@@ -1563,8 +1610,8 @@ class NotesCubedApp(pyglet.window.Window):
     def on_draw(self):
         self.clear()
         gl.glClear(gl.GL_COLOR_BUFFER_BIT | gl.GL_DEPTH_BUFFER_BIT)
-        self._update_face_previews()
         self._setup_3d()
+        self._update_face_previews()
         self._draw_cube()
         self._setup_2d()
         self._draw_editor()
@@ -1692,6 +1739,17 @@ class NotesCubedApp(pyglet.window.Window):
         if self.settings_open and not self._settings_panel_hit(x, y) and not self._cog_hit(x, y):
             self.settings_open = False
             self._settings_input_target = None
+        if self._spin_key_hit(x, y):
+            self.auto_spin = not self.auto_spin
+            if self.auto_spin:
+                _yaw, pitch = self._rotation_angles()
+                if abs(pitch) < AUTO_SPIN_TILT_DEGREES * 0.5:
+                    tilt = pyglet.math.Mat4.from_rotation(math.radians(AUTO_SPIN_TILT_DEGREES), Vec3(1, 0, 0))
+                    self.rotation = tilt @ self.rotation
+                self.edit_mode = False
+            else:
+                self.edit_mode = True
+            return
         face_hit = self._face_key_hit(x, y)
         if face_hit:
             self._snap_to_face(face_hit)
@@ -1908,6 +1966,12 @@ class NotesCubedApp(pyglet.window.Window):
                 return item["name"]
         return None
 
+    def _spin_key_hit(self, x, y):
+        if not self.spin_key_item:
+            return False
+        rect = self.spin_key_item["rect"]
+        return rect.x <= x <= rect.x + rect.width and rect.y <= y <= rect.y + rect.height
+
     def _arcball_vector(self, x, y):
         if self.width == 0 or self.height == 0:
             return Vec3(0, 0, 1)
@@ -1962,18 +2026,33 @@ class NotesCubedApp(pyglet.window.Window):
 
     def _update_face_previews(self):
         # Only render previews when needed (requires a valid GL context, so keep this in on_draw).
+        preview_size = self._preview_render_size()
+        for face in self.faces:
+            if getattr(face, "_preview_size", None) != preview_size:
+                face.preview_dirty = True
         any_dirty = any(face.preview_dirty for face in self.faces)
         if not any_dirty:
             return
         # Update at least the active face immediately; update the rest opportunistically.
         active = self.faces[self.current_face_index]
         if active.preview_dirty:
-            active.render_preview_to_texture(self)
+            active.render_preview_to_texture(self, preview_size)
         for face in self.faces:
             if face is active:
                 continue
             if face.preview_dirty:
-                face.render_preview_to_texture(self)
+                face.render_preview_to_texture(self, preview_size)
+
+    def _preview_render_size(self):
+        size = int(min(self.width, self.height) * EDITOR_SCALE)
+        if self._mvp_3d is not None:
+            active_face = self.faces[self.current_face_index]
+            bbox = self._face_bbox_on_screen(active_face.name, self._mvp_3d)
+            if bbox:
+                x0, y0, x1, y1 = bbox
+                side = int(max(1, min(x1 - x0, y1 - y0)))
+                size = side
+        return max(128, size)
 
     def _rotation_angles(self):
         forward = rotation_matrix_apply((0, 0, 1), self.rotation)
@@ -2075,6 +2154,10 @@ class NotesCubedApp(pyglet.window.Window):
         if time.time() - self.last_save > AUTOSAVE_SECONDS:
             self.save_all("autosave")
             self.last_save = time.time()
+        if self.auto_spin and not self.dragging:
+            rot = pyglet.math.Mat4.from_rotation(self.auto_spin_speed * dt, Vec3(0, 1, 0))
+            self.rotation = rot @ self.rotation
+            self.rotation = orthonormalize_rotation(self.rotation)
 
     def save_all(self, reason):
         for face in self.faces:
