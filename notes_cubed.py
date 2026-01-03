@@ -1083,6 +1083,7 @@ class NotesCubedApp(pyglet.window.Window):
         self.image_button = None
         self.image_label = None
         self.image_info_label = None
+        self.image_clear_label = None
         self.mode_buttons = []
         self.settings_open = False
         self._settings_input_target = None
@@ -1091,6 +1092,7 @@ class NotesCubedApp(pyglet.window.Window):
         self._settings_font_rgb_bounds = None
         self._settings_face_rgb_bounds = None
         self._settings_image_bounds = None
+        self._settings_image_clear_bounds = None
         self._pending_edit_click = None
         self._scrollbar_track = None
         self._scrollbar_thumb = None
@@ -1450,6 +1452,16 @@ class NotesCubedApp(pyglet.window.Window):
                 color=(170, 170, 170, 200),
                 batch=self.settings_batch,
             )
+            self.image_clear_label = pyglet.text.Label(
+                "x",
+                font_size=9,
+                x=0,
+                y=0,
+                color=(230, 180, 180, 220),
+                anchor_x="center",
+                anchor_y="center",
+                batch=self.settings_batch,
+            )
             for name in ("crop", "repeat", "scale"):
                 rect = shapes.Rectangle(0, 0, SETTINGS_BUTTON_WIDTH, SETTINGS_BUTTON_HEIGHT, color=(40, 40, 55), batch=self.settings_batch)
                 rect.opacity = 220
@@ -1501,6 +1513,8 @@ class NotesCubedApp(pyglet.window.Window):
             for label in (self.font_rgb_label, self.face_rgb_label, self.image_label, self.image_info_label):
                 if label:
                     label.color = (*label.color[:3], 0)
+            if self.image_clear_label:
+                self.image_clear_label.color = (*self.image_clear_label.color[:3], 0)
             for btn in self.mode_buttons:
                 btn["rect"].opacity = 0
                 btn["label"].color = (*btn["label"].color[:3], 0)
@@ -1584,9 +1598,14 @@ class NotesCubedApp(pyglet.window.Window):
         self.image_button.opacity = 230
         self.image_label.x = self.image_button.x + 6
         self.image_label.y = self.image_button.y + 4
+        self.image_label.color = (230, 230, 230, 230)
+        if self.image_clear_label:
+            self.image_clear_label.x = self.image_button.x + self.image_button.width - 10
+            self.image_clear_label.y = self.image_button.y + self.image_button.height / 2
         y -= SETTINGS_BOX_HEIGHT + 10
         self.image_info_label.x = x
         self.image_info_label.y = y
+        self.image_info_label.color = (170, 170, 170, 200)
         y -= 16
         self.settings_labels["mode"].x = x
         self.settings_labels["mode"].y = y + 4
@@ -1648,6 +1667,11 @@ class NotesCubedApp(pyglet.window.Window):
             image_name = image_name[:15] + "..."
         self.image_label.text = image_name
         self.image_info_label.text = image_info
+        if self.image_clear_label:
+            if face.background_def.get("type") == "image":
+                self.image_clear_label.color = (230, 180, 180, 220)
+            else:
+                self.image_clear_label.color = (230, 180, 180, 0)
         if face.background_def.get("type") != "image":
             self.settings_labels["mode"].color = (180, 180, 180, 0)
             for btn in self.mode_buttons:
@@ -1679,6 +1703,14 @@ class NotesCubedApp(pyglet.window.Window):
             self.image_button.x + self.image_button.width,
             self.image_button.y + self.image_button.height,
         )
+        if self.image_clear_label:
+            clear_size = max(10, self.image_clear_label.content_width + 6)
+            self._settings_image_clear_bounds = (
+                self.image_clear_label.x - clear_size / 2,
+                self.image_clear_label.y - clear_size / 2,
+                self.image_clear_label.x + clear_size / 2,
+                self.image_clear_label.y + clear_size / 2,
+            )
 
     def _parse_rgb(self, text):
         cleaned = text.replace(" ", ",")
@@ -1766,6 +1798,15 @@ class NotesCubedApp(pyglet.window.Window):
             if x0 <= x <= x1 and y0 <= y <= y1:
                 self._settings_input_target = "face_rgb"
                 self._settings_input_text = ""
+                return True
+        if self._settings_image_clear_bounds:
+            x0, y0, x1, y1 = self._settings_image_clear_bounds
+            if x0 <= x <= x1 and y0 <= y <= y1:
+                face = self.faces[self.current_face_index]
+                default_hex = DEFAULT_BACKGROUNDS[face.name]
+                face.set_background_def({"type": "color", "value": default_hex})
+                self.config_data["backgrounds"][face.name] = {"type": "color", "value": default_hex}
+                save_config(self.config_data)
                 return True
         if self._settings_image_bounds:
             x0, y0, x1, y1 = self._settings_image_bounds
