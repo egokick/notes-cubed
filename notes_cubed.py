@@ -241,7 +241,7 @@ class VideoStream:
         self._running = False
         self._start()
 
-    def _probe_size(self):
+    def _probe_info(self):
         if not shutil.which("ffprobe"):
             return None
         cmd = [
@@ -251,28 +251,49 @@ class VideoStream:
             "-select_streams",
             "v:0",
             "-show_entries",
-            "stream=width,height",
+            "stream=width,height,avg_frame_rate",
             "-of",
-            "csv=s=x:p=0",
+            "csv=p=0",
             self.path.as_posix(),
         ]
         try:
             output = subprocess.check_output(cmd, text=True).strip()
         except (subprocess.CalledProcessError, FileNotFoundError):
             return None
-        if "x" not in output:
+        parts = [part.strip() for part in output.split(",") if part.strip()]
+        if len(parts) < 2:
             return None
-        width_text, height_text = output.split("x", 1)
         try:
-            return int(width_text), int(height_text)
+            width = int(parts[0])
+            height = int(parts[1])
         except ValueError:
             return None
+        fps = None
+        if len(parts) >= 3 and parts[2]:
+            fps_text = parts[2]
+            if "/" in fps_text:
+                num_text, den_text = fps_text.split("/", 1)
+                try:
+                    num = float(num_text)
+                    den = float(den_text)
+                    if den:
+                        fps = num / den
+                except ValueError:
+                    fps = None
+            else:
+                try:
+                    fps = float(fps_text)
+                except ValueError:
+                    fps = None
+        return width, height, fps
 
     def _start(self):
-        size = self._probe_size()
-        if not size:
+        info = self._probe_info()
+        if not info:
             return
-        self.width, self.height = size
+        self.width, self.height, fps = info
+        if fps and fps > 1.0:
+            self.fps = fps
         if not shutil.which("ffmpeg"):
             return
         cmd = [
@@ -309,6 +330,8 @@ class VideoStream:
         if not self._process or not self._process.stdout:
             return
         frame_bytes = self.width * self.height * 4
+        next_frame_time = time.perf_counter()
+        frame_interval = 1.0 / self.fps if self.fps > 0 else 0.0
         while self._running:
             data = self._process.stdout.read(frame_bytes)
             if not data or len(data) < frame_bytes:
@@ -316,6 +339,11 @@ class VideoStream:
             with self._lock:
                 self._latest_frame = data
                 self._frame_counter += 1
+            if frame_interval > 0:
+                now = time.perf_counter()
+                if now < next_frame_time:
+                    time.sleep(next_frame_time - now)
+                next_frame_time = max(next_frame_time + frame_interval, now + frame_interval)
 
     def get_image(self):
         if not self._running:
