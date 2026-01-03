@@ -2,8 +2,10 @@ import argparse
 import ctypes
 import json
 import math
+import shutil
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -44,6 +46,7 @@ FACE_KEY_SPACING = 6
 FACE_KEY_MARGIN = 18
 AUTO_SPIN_SPEED = 0.35
 AUTO_SPIN_TILT_DEGREES = 12.0
+VIDEO_PREVIEW_FPS = 15
 SCROLLBAR_WIDTH = 4
 SCROLLBAR_MARGIN = 10
 SCROLLBAR_MIN_HEIGHT = 24
@@ -220,6 +223,123 @@ def orthonormalize_rotation(rotation):
         0.0,
         1.0,
     )
+
+
+class VideoStream:
+    def __init__(self, path, fps=VIDEO_PREVIEW_FPS):
+        self.path = Path(path)
+        self.fps = fps
+        self.width = 0
+        self.height = 0
+        self._process = None
+        self._thread = None
+        self._lock = threading.Lock()
+        self._latest_frame = None
+        self._frame_counter = 0
+        self._last_applied = -1
+        self._image = None
+        self._running = False
+        self._start()
+
+    def _probe_size(self):
+        if not shutil.which("ffprobe"):
+            return None
+        cmd = [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=width,height",
+            "-of",
+            "csv=s=x:p=0",
+            self.path.as_posix(),
+        ]
+        try:
+            output = subprocess.check_output(cmd, text=True).strip()
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            return None
+        if "x" not in output:
+            return None
+        width_text, height_text = output.split("x", 1)
+        try:
+            return int(width_text), int(height_text)
+        except ValueError:
+            return None
+
+    def _start(self):
+        size = self._probe_size()
+        if not size:
+            return
+        self.width, self.height = size
+        if not shutil.which("ffmpeg"):
+            return
+        cmd = [
+            "ffmpeg",
+            "-loglevel",
+            "error",
+            "-stream_loop",
+            "-1",
+            "-i",
+            self.path.as_posix(),
+            "-an",
+            "-vf",
+            f"fps={self.fps}",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "rgba",
+            "-",
+        ]
+        try:
+            self._process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+        except FileNotFoundError:
+            self._process = None
+            return
+        self._running = True
+        self._thread = threading.Thread(target=self._reader, daemon=True)
+        self._thread.start()
+
+    def _reader(self):
+        if not self._process or not self._process.stdout:
+            return
+        frame_bytes = self.width * self.height * 4
+        while self._running:
+            data = self._process.stdout.read(frame_bytes)
+            if not data or len(data) < frame_bytes:
+                break
+            with self._lock:
+                self._latest_frame = data
+                self._frame_counter += 1
+
+    def get_image(self):
+        if not self._running:
+            return self._image
+        with self._lock:
+            if self._latest_frame is None or self._frame_counter == self._last_applied:
+                return self._image
+            data = self._latest_frame
+            self._last_applied = self._frame_counter
+        pitch = -self.width * 4
+        if self._image is None:
+            self._image = pyglet.image.ImageData(self.width, self.height, "RGBA", data, pitch=pitch)
+        else:
+            self._image.set_data("RGBA", pitch, data)
+        return self._image
+
+    def close(self):
+        self._running = False
+        if self._process:
+            try:
+                self._process.terminate()
+            except Exception:
+                pass
+            self._process = None
 
 
 class CubeRenderer:
@@ -403,6 +523,7 @@ class FaceState:
         self._bg_image = None
         self._bg_player = None
         self._bg_sprite = None
+        self._video_stream = None
         self.preview_dirty = True
         self._preview_last_text = None
         self._preview_texture = None
@@ -425,6 +546,11 @@ class FaceState:
 
     def save(self):
         self.path.write_text(self.document.text, encoding="utf-8")
+
+    def close(self):
+        if self._video_stream:
+            self._video_stream.close()
+            self._video_stream = None
 
     def bind_layout(self, width, height, window=None):
         self.layout = pyglet.text.layout.IncrementalTextLayout(
@@ -646,9 +772,12 @@ class FaceState:
         return parse_color(DEFAULT_BACKGROUNDS[self.name])
 
     def background_image(self):
+        if self._video_stream:
+            return self._video_stream.get_image()
         if self._bg_player:
             try:
-                return self._bg_player.get_texture()
+                self._bg_player.update_texture()
+                return self._bg_player.texture
             except Exception:
                 return None
         if self._bg_sprite:
@@ -753,6 +882,9 @@ class FaceState:
                     pass
             self._bg_player = None
             self._bg_sprite = None
+            if self._video_stream:
+                self._video_stream.close()
+            self._video_stream = None
             return
         path = Path(self.background_def.get("value", ""))
         if not path.exists():
@@ -764,6 +896,9 @@ class FaceState:
                     pass
             self._bg_player = None
             self._bg_sprite = None
+            if self._video_stream:
+                self._video_stream.close()
+            self._video_stream = None
             return
         if self._bg_player:
             try:
@@ -772,23 +907,28 @@ class FaceState:
                 pass
             self._bg_player = None
         self._bg_sprite = None
+        if self._video_stream:
+            self._video_stream.close()
+        self._video_stream = None
         try:
             ext = path.suffix.lower()
             if ext in {".gif", ".mp4", ".mov", ".m4v", ".webm", ".avi"}:
+                if ext != ".gif":
+                    stream = VideoStream(path)
+                    if stream.width > 0 and stream.height > 0:
+                        self._video_stream = stream
+                        self._bg_image = None
+                        self.preview_dirty = True
+                        return
                 try:
-                    source = pyglet.media.load(path.as_posix())
-                    player = pyglet.media.Player()
-                    player.queue(source)
-                    player.volume = 0.0
-                    if hasattr(player, "loop"):
-                        player.loop = True
-                    player.play()
-                    self._bg_player = player
-                    self._bg_image = None
-                    self.preview_dirty = True
-                    return
+                    loaded = pyglet.image.load(path.as_posix())
+                    if isinstance(loaded, pyglet.image.Animation):
+                        self._bg_sprite = pyglet.sprite.Sprite(loaded)
+                        self._bg_image = None
+                        self.preview_dirty = True
+                        return
                 except Exception:
-                    self._bg_player = None
+                    self._bg_sprite = None
             loaded = pyglet.image.load(path.as_posix())
             if isinstance(loaded, pyglet.image.Animation):
                 self._bg_sprite = pyglet.sprite.Sprite(loaded)
@@ -1408,9 +1548,10 @@ class NotesCubedApp(pyglet.window.Window):
         image_name = "Select..."
         image_info = ""
         if face.background_def.get("type") == "image":
-            image_path = Path(face.background_def.get("value", ""))
-            if image_path.name:
-                image_name = image_path.name
+            image_value = str(face.background_def.get("value", ""))
+            if image_value:
+                image_path = Path(image_value)
+                image_name = image_path.name or image_value
             if face.background_image():
                 img = face.background_image()
                 if isinstance(img, sprite.Sprite):
@@ -2165,7 +2306,7 @@ class NotesCubedApp(pyglet.window.Window):
                 face.preview_dirty = True
             if face.preview_texture() is None:
                 face.preview_dirty = True
-            if face._bg_player or face._bg_sprite:
+            if face._bg_player or face._bg_sprite or face._video_stream:
                 face.preview_dirty = True
         any_dirty = any(face.preview_dirty for face in self.faces)
         if not any_dirty:
@@ -2307,6 +2448,8 @@ class NotesCubedApp(pyglet.window.Window):
         self.last_save = time.time()
 
     def on_close(self):
+        for face in self.faces:
+            face.close()
         self.save_all("app close")
         return super().on_close()
 
