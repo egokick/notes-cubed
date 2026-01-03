@@ -520,6 +520,9 @@ class FaceState:
                 0, self._preview_size, 0, self._preview_size, -1, 1
             )
             window.view = pyglet.math.Mat4()
+            bg_image = self.background_image()
+            if bg_image:
+                self._draw_preview_background(bg_image, self._preview_size)
             self._preview_batch.draw()
         finally:
             self._preview_fbo.unbind()
@@ -528,6 +531,107 @@ class FaceState:
             window.view = prev_view
 
         self.preview_dirty = False
+
+    def _draw_preview_background(self, image, size):
+        mode = self.background_image_mode()
+        if isinstance(image, sprite.Sprite):
+            self._draw_preview_sprite(image, size, mode)
+        else:
+            self._draw_preview_image(image, size, mode)
+
+    def _draw_preview_image(self, image, size, mode):
+        if mode == "repeat":
+            self._draw_preview_image_tiled(image, size)
+        elif mode == "crop":
+            self._draw_preview_image_cropped(image, size)
+        else:
+            self._draw_preview_image_scaled(image, size)
+
+    def _draw_preview_image_scaled(self, image, size):
+        gl.glEnable(gl.GL_SCISSOR_TEST)
+        gl.glScissor(0, 0, int(size), int(size))
+        image.blit(0, 0, width=size, height=size)
+        gl.glDisable(gl.GL_SCISSOR_TEST)
+
+    def _draw_preview_image_cropped(self, image, size):
+        scale = max(size / image.width, size / image.height)
+        draw_w = int(image.width * scale)
+        draw_h = int(image.height * scale)
+        draw_x = int((size - draw_w) / 2)
+        draw_y = int((size - draw_h) / 2)
+        gl.glEnable(gl.GL_SCISSOR_TEST)
+        gl.glScissor(0, 0, int(size), int(size))
+        image.blit(draw_x, draw_y, width=draw_w, height=draw_h)
+        gl.glDisable(gl.GL_SCISSOR_TEST)
+
+    def _draw_preview_image_tiled(self, image, size):
+        gl.glEnable(gl.GL_SCISSOR_TEST)
+        gl.glScissor(0, 0, int(size), int(size))
+        step_x = max(1, image.width)
+        step_y = max(1, image.height)
+        for tx in range(0, int(size), step_x):
+            for ty in range(0, int(size), step_y):
+                image.blit(tx, ty)
+        gl.glDisable(gl.GL_SCISSOR_TEST)
+
+    def _draw_preview_sprite(self, image, size, mode):
+        if mode == "repeat":
+            self._draw_preview_sprite_tiled(image, size)
+        elif mode == "crop":
+            self._draw_preview_sprite_cropped(image, size)
+        else:
+            self._draw_preview_sprite_scaled(image, size)
+
+    def _draw_preview_sprite_scaled(self, image, size):
+        if image.image.width <= 0 or image.image.height <= 0:
+            return
+        image.scale_x = size / image.image.width
+        image.scale_y = size / image.image.height
+        image.x = 0
+        image.y = 0
+        gl.glEnable(gl.GL_SCISSOR_TEST)
+        gl.glScissor(0, 0, int(size), int(size))
+        image.draw()
+        gl.glDisable(gl.GL_SCISSOR_TEST)
+
+    def _draw_preview_sprite_cropped(self, image, size):
+        if image.image.width <= 0 or image.image.height <= 0:
+            return
+        scale = max(size / image.image.width, size / image.image.height)
+        draw_w = int(image.image.width * scale)
+        draw_h = int(image.image.height * scale)
+        image.scale_x = scale
+        image.scale_y = scale
+        image.x = int((size - draw_w) / 2)
+        image.y = int((size - draw_h) / 2)
+        gl.glEnable(gl.GL_SCISSOR_TEST)
+        gl.glScissor(0, 0, int(size), int(size))
+        image.draw()
+        gl.glDisable(gl.GL_SCISSOR_TEST)
+
+    def _draw_preview_sprite_tiled(self, image, size):
+        if image.image.width <= 0 or image.image.height <= 0:
+            return
+        original_x = image.x
+        original_y = image.y
+        original_scale_x = image.scale_x
+        original_scale_y = image.scale_y
+        image.scale_x = 1.0
+        image.scale_y = 1.0
+        gl.glEnable(gl.GL_SCISSOR_TEST)
+        gl.glScissor(0, 0, int(size), int(size))
+        step_x = max(1, image.image.width)
+        step_y = max(1, image.image.height)
+        for tx in range(0, int(size), step_x):
+            for ty in range(0, int(size), step_y):
+                image.x = tx
+                image.y = ty
+                image.draw()
+        gl.glDisable(gl.GL_SCISSOR_TEST)
+        image.x = original_x
+        image.y = original_y
+        image.scale_x = original_scale_x
+        image.scale_y = original_scale_y
 
     def scroll(self, dy):
         if not self.layout:
@@ -615,6 +719,7 @@ class FaceState:
         if self.background_def.get("type") == "image":
             self.background_def.setdefault("mode", "scale")
         self._load_background_asset()
+        self.preview_dirty = True
 
     def set_font_color(self, color):
         rgb = tuple(int(c) for c in color[:3])
@@ -680,6 +785,7 @@ class FaceState:
                     player.play()
                     self._bg_player = player
                     self._bg_image = None
+                    self.preview_dirty = True
                     return
                 except Exception:
                     self._bg_player = None
@@ -689,6 +795,7 @@ class FaceState:
                 self._bg_image = None
             else:
                 self._bg_image = loaded
+            self.preview_dirty = True
         except Exception:
             self._bg_image = None
             self._bg_sprite = None
@@ -742,6 +849,7 @@ class NotesCubedApp(pyglet.window.Window):
         self.spin_key_item = None
         self.auto_spin = False
         self.auto_spin_speed = AUTO_SPIN_SPEED
+        self._last_outside_click_time = 0.0
         self.cog_label = None
         self.settings_panel = None
         self.settings_title = None
@@ -1612,6 +1720,8 @@ class NotesCubedApp(pyglet.window.Window):
         gl.glClear(gl.GL_COLOR_BUFFER_BIT | gl.GL_DEPTH_BUFFER_BIT)
         self._setup_3d()
         self._update_face_previews()
+        gl.glEnable(gl.GL_DEPTH_TEST)
+        gl.glDepthMask(True)
         self._draw_cube()
         self._setup_2d()
         self._draw_editor()
@@ -1763,6 +1873,12 @@ class NotesCubedApp(pyglet.window.Window):
             self._activate_caret(x, y, button, modifiers)
             return
         if not self._point_in_cube(x, y):
+            now = time.time()
+            if now - self._last_outside_click_time <= 0.35:
+                self._last_outside_click_time = 0.0
+                self.minimize()
+                return
+            self._last_outside_click_time = now
             self.edit_mode = False
             self._return_to_edit_when_aligned = False
             self.dragging = True
@@ -1770,6 +1886,7 @@ class NotesCubedApp(pyglet.window.Window):
             self.last_mouse = (x, y)
             self._drag_vector = self._arcball_vector(x, y)
             return
+        self._last_outside_click_time = 0.0
         if not self.edit_mode:
             self.edit_mode = True
             self._return_to_edit_when_aligned = False
@@ -2027,8 +2144,15 @@ class NotesCubedApp(pyglet.window.Window):
     def _update_face_previews(self):
         # Only render previews when needed (requires a valid GL context, so keep this in on_draw).
         preview_size = self._preview_render_size()
+        if not self.edit_mode:
+            for face in self.faces:
+                face.preview_dirty = True
         for face in self.faces:
             if getattr(face, "_preview_size", None) != preview_size:
+                face.preview_dirty = True
+            if face.preview_texture() is None:
+                face.preview_dirty = True
+            if face._bg_player or face._bg_sprite:
                 face.preview_dirty = True
         any_dirty = any(face.preview_dirty for face in self.faces)
         if not any_dirty:
@@ -2045,13 +2169,7 @@ class NotesCubedApp(pyglet.window.Window):
 
     def _preview_render_size(self):
         size = int(min(self.width, self.height) * EDITOR_SCALE)
-        if self._mvp_3d is not None:
-            active_face = self.faces[self.current_face_index]
-            bbox = self._face_bbox_on_screen(active_face.name, self._mvp_3d)
-            if bbox:
-                x0, y0, x1, y1 = bbox
-                side = int(max(1, min(x1 - x0, y1 - y0)))
-                size = side
+        size = min(size, FACE_PREVIEW_SIZE)
         return max(128, size)
 
     def _rotation_angles(self):
@@ -2155,9 +2273,9 @@ class NotesCubedApp(pyglet.window.Window):
             self.save_all("autosave")
             self.last_save = time.time()
         if self.auto_spin and not self.dragging:
-            rot = pyglet.math.Mat4.from_rotation(self.auto_spin_speed * dt, Vec3(0, 1, 0))
+            rot = pyglet.math.Mat4.from_rotation(-self.auto_spin_speed * dt, Vec3(0, 1, 0))
             self.rotation = rot @ self.rotation
-            self.rotation = orthonormalize_rotation(self.rotation)
+            self.invalid = True
 
     def save_all(self, reason):
         for face in self.faces:
