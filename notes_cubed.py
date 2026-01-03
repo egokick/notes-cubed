@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pyglet
 from pyglet import gl, shapes, sprite
+from pyglet.graphics import shader
 from pyglet.image.buffer import Framebuffer
 from pyglet.math import Vec3, Vec4
 from pyglet.media import synthesis
@@ -391,6 +392,10 @@ class CubeRenderer:
     def __init__(self, size=1.2, face_alpha=220):
         self.size = float(size)
         self.face_alpha = int(face_alpha)
+        self._projection = None
+        self._view = None
+        self._program = self._build_program()
+        self._blank_texture = pyglet.image.SolidColorImagePattern((0, 0, 0, 0)).create_image(1, 1).get_texture()
         self._build_geometry()
 
     def _build_geometry(self):
@@ -434,6 +439,45 @@ class CubeRenderer:
         self.indices = indices
         self.edges = edges
 
+    def _build_program(self):
+        vertex_source = """#version 150 core
+        in vec3 position;
+        in vec4 colors;
+        in vec3 tex_coords;
+
+        uniform mat4 projection;
+        uniform mat4 view;
+
+        out vec4 v_color;
+        out vec2 v_texcoord;
+
+        void main()
+        {
+            gl_Position = projection * view * vec4(position, 1.0);
+            v_color = colors;
+            v_texcoord = tex_coords.xy;
+        }
+        """
+        fragment_source = """#version 150 core
+        in vec4 v_color;
+        in vec2 v_texcoord;
+
+        uniform sampler2D tex0;
+
+        out vec4 final_color;
+
+        void main()
+        {
+            vec4 tex = texture(tex0, v_texcoord);
+            vec3 blended = mix(v_color.rgb, tex.rgb, tex.a);
+            final_color = vec4(blended, v_color.a);
+        }
+        """
+        return shader.ShaderProgram(
+            shader.Shader(vertex_source, "vertex"),
+            shader.Shader(fragment_source, "fragment"),
+        )
+
     def _build_face_tex_coords(self):
         face_tex_coords = {}
         for face_name in FACE_NAMES:
@@ -468,6 +512,8 @@ class CubeRenderer:
         # pyglet.math.Mat4.perspective_projection signature: (aspect, z_near, z_far, fov_degrees=60)
         window.projection = pyglet.math.Mat4.perspective_projection(aspect, 0.1, 100.0, 60.0)
         window.view = pyglet.math.Mat4.look_at(Vec3(0, 0, 4.0), Vec3(0, 0, 0), Vec3(0, 1, 0)) @ rotation
+        self._projection = window.projection
+        self._view = window.view
 
     def draw(self, backgrounds, rotation):
         raise NotImplementedError("Use draw_textured so text stays visible on faces.")
@@ -478,6 +524,12 @@ class CubeRenderer:
     def draw_textured_with_alpha(self, face_textures, backgrounds, rotation, face_alpha, sort_faces=False):
         # Default pyglet shader samples a texture and adds `colors`, so draw per-face with that face's texture bound.
         indices = [0, 1, 2, 0, 2, 3]
+        if self._projection is None or self._view is None:
+            return
+        self._program.use()
+        self._program["projection"] = self._projection
+        self._program["view"] = self._view
+        self._program["tex0"] = 0
         face_names = self.face_order
         if sort_faces:
             face_names = sorted(
@@ -505,17 +557,14 @@ class CubeRenderer:
                 alpha,
             )
             colors = list(shaded) * 4
-            texture = (face_textures or {}).get(face_name)
-            if texture:
-                gl.glActiveTexture(gl.GL_TEXTURE0)
-                gl.glBindTexture(texture.target, texture.id)
-                gl.glEnable(gl.GL_BLEND)
-                gl.glBlendFunc(770, 771)  # SRC_ALPHA, ONE_MINUS_SRC_ALPHA
-            else:
-                gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
+            texture = (face_textures or {}).get(face_name) or self._blank_texture
+            gl.glActiveTexture(gl.GL_TEXTURE0)
+            gl.glBindTexture(texture.target, texture.id)
+            gl.glEnable(gl.GL_BLEND)
+            gl.glBlendFunc(770, 771)  # SRC_ALPHA, ONE_MINUS_SRC_ALPHA
             verts = self.face_verts[face_name]
             positions = [c for v in verts for c in v]
-            pyglet.graphics.draw_indexed(
+            vertex_list = self._program.vertex_list_indexed(
                 4,
                 gl.GL_TRIANGLES,
                 indices,
@@ -523,8 +572,11 @@ class CubeRenderer:
                 colors=("Bn", colors),
                 tex_coords=("f", tex_coords),
             )
+            vertex_list.draw(gl.GL_TRIANGLES)
+            vertex_list.delete()
 
         gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
+        self._program.stop()
 
         # Edges (wireframe) for depth cues.
         edge_indices = [i for edge in self.edges for i in edge]
