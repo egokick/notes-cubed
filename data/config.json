@@ -7,9 +7,8 @@
       "value": "#3c6ec8"
     },
     "right": {
-      "type": "image",
-      "value": "C:/Users/Dextop/Pictures/Dexter stuff/vrf1Sj4w.jpeg",
-      "mode": "crop"
+      "type": "color",
+      "value": "#00788c"
     },
     "back": {
       "type": "image",
@@ -18,7 +17,7 @@
     },
     "left": {
       "type": "color",
-      "value": "#5a3c28"
+      "value": "#e8b900"
     },
     "top": {
       "type": "color",
@@ -36,9 +35,9 @@
       0
     ],
     "right": [
-      240,
-      220,
-      170
+      0,
+      0,
+      0
     ],
     "back": [
       255,
@@ -46,9 +45,9 @@
       255
     ],
     "left": [
-      255,
-      255,
-      255
+      0,
+      0,
+      0
     ],
     "top": [
       255,
@@ -61,5 +60,13 @@
       255
     ]
   },
-  "git_sync": false
+  "git_sync": false,
+  "font_sizes": {
+    "front": 14,
+    "right": 14,
+    "back": 14,
+    "left": 16,
+    "top": 14,
+    "bottom": 14
+  }
 }

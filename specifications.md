@@ -53,7 +53,9 @@ User-level behavior for Notes Cubed. Update this document whenever a new require
 - Clicking outside the settings panel closes it without triggering other actions.
 - Font color and face color can be set via preset swatches.
 - Font and face preset swatches share the same color-sorted palette, including black, white, and the primary colors.
+- Clicking Font RGB or Face RGB opens a color picker; canceling it enables manual entry.
 - Font RGB and face RGB fields prefill the current value and accept `R,G,B`, `R G B`, or hex (`#RRGGBB`/`#RGB`); `Enter` applies and `Esc` cancels.
+- Font size can be set per face from the settings panel (range 8-48, default 14).
 - Background media can be selected via a file picker (images and common video formats).
 - Image mode can be set to crop, repeat, or scale when a background image is selected.
 - Clearing the image restores the face's default background color.

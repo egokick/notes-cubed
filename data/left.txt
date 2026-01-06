@@ -2,8 +2,8 @@ Liberty
 
 * Vicente sent me a monitor that is being reported on but it is in the wrong status in the report - check the workflow and correct it
 
-* olga wants a report for all apm servicesww
-additional column that says yes/no for apm, based on the existence of the service column
+
+ existence of the service column
  remove the pivot value and the pivot_key from the datadog report
  * in the datadog report include in the data pulled from discovery the artifact environment and the date of the last deployment
 
