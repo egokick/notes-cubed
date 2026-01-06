@@ -61,6 +61,9 @@ Edit `data/config.json` to tweak backgrounds and Git remote. Example:
 - **Persistence**: Autosaves on close; `Ctrl`+`S` saves + commits.
 - **GitHub sync**: Works if a remote is configured; otherwise commits stay local.
 
+## Specifications
+User-level behavior is documented in `specifications.md`. Whenever you add a new requirement or discover a new behavior detail, update `specifications.md` to keep it current.
+
 ## Testing
 Basic headless check (no window) to verify file IO and git plumbing:
 ```
