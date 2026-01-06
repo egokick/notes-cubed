@@ -1,15 +1,15 @@
 {
-  "last_face": 0,
+  "last_face": 1,
   "remote": "",
   "backgrounds": {
     "front": {
       "type": "image",
-      "value": "C:/Users/Dextop/Pictures/Dexter stuff/vrf1Sj4w.jpeg",
+      "value": "C:/source/notes-cubed/data/presetimages/03-preart.jpg",
       "mode": "scale"
     },
     "right": {
       "type": "color",
-      "value": "#00788c"
+      "value": "#10314a"
     },
     "back": {
       "type": "image",
@@ -64,7 +64,7 @@
   "git_sync": false,
   "font_sizes": {
     "front": 16,
-    "right": 14,
+    "right": 20,
     "back": 14,
     "left": 16,
     "top": 14,

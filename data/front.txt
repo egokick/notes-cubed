@@ -1,8 +1,5 @@
 notes-cubed
 
-
- 
-
 1 - allow each face to become a kinito pet/tamagochi, they can make noises, you have to feed them. they're cute. 
 
 2 - +Icon to add a new face to the cube (this will appear in the keys) also a delete icon to delete the current face, this will popup with a yes/no confirmation before deleting, both should be in the top right of the face, next to the cog icon
