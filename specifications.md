@@ -30,8 +30,14 @@ User-level behavior for Notes Cubed. Update this document whenever a new require
 - `Alt`+`Left/Right/Up/Down` rotates to the target face and returns to edit mode.
 - `Left/Right/Up/Down` in rotate mode snaps to a face and stays in rotate mode.
 - `Home` moves the caret to the start of the current line (`Shift`+`Home` selects to the start of the line).
-- `Tab` inserts a tab character for indentation (edit mode).
+- `Tab` inserts a tab character or indents selected lines; `Shift`+`Tab` removes one indent from the current line or selection (edit mode).
 - `Ctrl`+`S` saves all faces and runs Git sync.
+- `Ctrl`+`Backspace/Delete` deletes the previous/next word (edit mode).
+- `Ctrl`+`C/X` copies/cuts the selection; if nothing is selected it copies/cuts the current line (edit mode).
+- `Ctrl`+`V` (or `Ctrl`+`Shift`+`V`) pastes from the clipboard (edit mode).
+- `Ctrl`+`D` duplicates the current line or selected lines (edit mode).
+- `Alt`+`Up/Down` moves the current line or selected lines; `Shift`+`Alt`+`Up/Down` copies them (edit mode).
+- `Ctrl`+`L` deletes the current line (edit mode).
 - `Ctrl`+`A` selects all; `Ctrl`+`Z` undo; `Ctrl`+`Shift`+`Z` redo; `Ctrl`+`Y` redo.
 - `F12` saves a PNG screenshot to `data/screenshots/` with the current face and rotation in the filename.
 - `Esc` cancels RGB entry if active; otherwise it closes the settings panel, and if neither are active it toggles rotate/edit mode.

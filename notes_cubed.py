@@ -1263,9 +1263,10 @@ class NotesCubedApp(pyglet.window.Window):
         self._scrollbar_track = None
         self._scrollbar_thumb = None
         self._toast_until = 0.0
+        self._held_modifiers = 0
         self._last_key_symbol = None
-        self._last_key_modifiers = 0
         self._last_key_time = 0.0
+        self._suppress_next_motion = False
         self._pending_screenshot_path = None
         self._exit_after_screenshot = False
         self._mvp_3d = None
@@ -1522,16 +1523,332 @@ class NotesCubedApp(pyglet.window.Window):
             active_face.caret.mark = None
         active_face.caret.position = new_pos
 
-    def _should_override_home_motion(self, motion):
-        if motion == key.MOTION_BEGINNING_OF_LINE:
-            return True
+    def _move_caret_to_line_end(self, select=False):
+        active_face = self.faces[self.current_face_index]
+        if not active_face.caret:
+            return
+        text = active_face.document.text
+        pos = max(0, min(active_face.caret.position, len(text)))
+        line_end = text.find("\n", pos)
+        new_pos = len(text) if line_end == -1 else line_end
+        if select:
+            if active_face.caret.mark is None:
+                active_face.caret.mark = pos
+        else:
+            active_face.caret.mark = None
+        active_face.caret.position = new_pos
+
+    @staticmethod
+    def _selection_range(caret):
+        if not caret or caret.mark is None or caret.mark == caret.position:
+            return None
+        start = min(caret.mark, caret.position)
+        end = max(caret.mark, caret.position)
+        return start, end
+
+    @staticmethod
+    def _line_bounds(text, pos):
+        line_start = text.rfind("\n", 0, pos)
+        line_start = 0 if line_start == -1 else line_start + 1
+        line_end = text.find("\n", pos)
+        line_end = len(text) if line_end == -1 else line_end + 1
+        return line_start, line_end
+
+    def _line_block_for_selection(self, text, caret):
+        selection = self._selection_range(caret)
+        if selection:
+            start, end = selection
+            end_pos = max(start, end - 1)
+            block_start = text.rfind("\n", 0, start)
+            block_start = 0 if block_start == -1 else block_start + 1
+            block_end = text.find("\n", end_pos)
+            block_end = len(text) if block_end == -1 else block_end + 1
+            return block_start, block_end
+        pos = caret.position if caret else 0
+        return self._line_bounds(text, pos)
+
+    def _line_starts_in_range(self, text, start, end):
+        if end < start:
+            return []
+        starts = []
+        line_start = text.rfind("\n", 0, start)
+        line_start = 0 if line_start == -1 else line_start + 1
+        while line_start <= end:
+            starts.append(line_start)
+            next_break = text.find("\n", line_start)
+            if next_break == -1:
+                break
+            line_start = next_break + 1
+        return starts
+
+    def _indent_lines(self):
+        active_face = self.faces[self.current_face_index]
+        if not active_face.caret:
+            return
+        text = active_face.document.text
+        selection = self._selection_range(active_face.caret)
+        if selection:
+            start, end = selection
+            end_pos = max(start, end - 1)
+        else:
+            pos = active_face.caret.position
+            start = pos
+            end_pos = pos
+        line_starts = self._line_starts_in_range(text, start, end_pos)
+        if not line_starts:
+            return
+        active_face.record_undo()
+        for line_start in reversed(line_starts):
+            active_face.document.insert_text(line_start, "\t")
+            if active_face.caret.position >= line_start:
+                active_face.caret.position += 1
+            if active_face.caret.mark is not None and active_face.caret.mark >= line_start:
+                active_face.caret.mark += 1
+        active_face.mark_preview_dirty()
+
+    def _unindent_lines(self):
+        active_face = self.faces[self.current_face_index]
+        if not active_face.caret:
+            return
+        text = active_face.document.text
+        selection = self._selection_range(active_face.caret)
+        if selection:
+            start, end = selection
+            end_pos = max(start, end - 1)
+        else:
+            pos = active_face.caret.position
+            start = pos
+            end_pos = pos
+        line_starts = self._line_starts_in_range(text, start, end_pos)
+        if not line_starts:
+            return
+        active_face.record_undo()
+        for line_start in reversed(line_starts):
+            if line_start >= len(text):
+                continue
+            remove_len = 0
+            if text.startswith("\t", line_start):
+                remove_len = 1
+            else:
+                while remove_len < 4 and line_start + remove_len < len(text) and text[line_start + remove_len] == " ":
+                    remove_len += 1
+            if remove_len == 0:
+                continue
+            active_face.document.delete_text(line_start, line_start + remove_len)
+            if active_face.caret.position > line_start:
+                active_face.caret.position = max(line_start, active_face.caret.position - remove_len)
+            if active_face.caret.mark is not None and active_face.caret.mark > line_start:
+                active_face.caret.mark = max(line_start, active_face.caret.mark - remove_len)
+        active_face.mark_preview_dirty()
+
+    def _unindent_current_line(self):
+        active_face = self.faces[self.current_face_index]
+        if not active_face.caret:
+            return
+        text = active_face.document.text
+        pos = max(0, min(active_face.caret.position, len(text)))
+        line_start = text.rfind("\n", 0, pos)
+        line_start = 0 if line_start == -1 else line_start + 1
+        if line_start >= len(text):
+            return
+        remove_len = 0
+        if text.startswith("\t", line_start):
+            remove_len = 1
+        else:
+            while remove_len < 4 and line_start + remove_len < len(text) and text[line_start + remove_len] == " ":
+                remove_len += 1
+        if remove_len == 0:
+            return
+        active_face.record_undo()
+        active_face.document.delete_text(line_start, line_start + remove_len)
+        if active_face.caret:
+            if active_face.caret.mark is not None and active_face.caret.mark > line_start:
+                active_face.caret.mark = max(line_start, active_face.caret.mark - remove_len)
+            if pos > line_start:
+                active_face.caret.position = max(line_start, pos - remove_len)
+        active_face.mark_preview_dirty()
+
+    def _duplicate_lines(self):
+        active_face = self.faces[self.current_face_index]
+        if not active_face.caret:
+            return
+        text = active_face.document.text
+        block_start, block_end = self._line_block_for_selection(text, active_face.caret)
+        block = text[block_start:block_end]
+        if not block:
+            return
+        active_face.record_undo()
+        active_face.document.insert_text(block_end, block)
+        if active_face.caret.position >= block_start:
+            active_face.caret.position += len(block)
+        if active_face.caret.mark is not None and active_face.caret.mark >= block_start:
+            active_face.caret.mark += len(block)
+        active_face.mark_preview_dirty()
+
+    def _move_lines(self, direction, copy=False):
+        active_face = self.faces[self.current_face_index]
+        if not active_face.caret:
+            return
+        text = active_face.document.text
+        block_start, block_end = self._line_block_for_selection(text, active_face.caret)
+        block = text[block_start:block_end]
+        if not block:
+            return
+        if direction == "up":
+            if block_start == 0:
+                return
+            prev_start = text.rfind("\n", 0, block_start - 1)
+            prev_start = 0 if prev_start == -1 else prev_start + 1
+            prev_end = block_start
+            prev_line = text[prev_start:prev_end]
+            if copy:
+                active_face.record_undo()
+                active_face.document.insert_text(prev_start, block)
+                if active_face.caret.position >= block_start:
+                    active_face.caret.position -= len(block)
+                if active_face.caret.mark is not None and active_face.caret.mark >= block_start:
+                    active_face.caret.mark -= len(block)
+            else:
+                active_face.record_undo()
+                new_text = text[:prev_start] + block + prev_line + text[block_end:]
+                active_face.document.text = new_text
+                if active_face.caret.position >= block_start:
+                    active_face.caret.position -= len(prev_line)
+                if active_face.caret.mark is not None and active_face.caret.mark >= block_start:
+                    active_face.caret.mark -= len(prev_line)
+        elif direction == "down":
+            if block_end >= len(text):
+                return
+            next_end = text.find("\n", block_end)
+            next_end = len(text) if next_end == -1 else next_end + 1
+            next_line = text[block_end:next_end]
+            if copy:
+                active_face.record_undo()
+                active_face.document.insert_text(block_end, block)
+                if active_face.caret.position >= block_start:
+                    active_face.caret.position += len(block)
+                if active_face.caret.mark is not None and active_face.caret.mark >= block_start:
+                    active_face.caret.mark += len(block)
+            else:
+                active_face.record_undo()
+                new_text = text[:block_start] + next_line + block + text[next_end:]
+                active_face.document.text = new_text
+                if active_face.caret.position >= block_start:
+                    active_face.caret.position += len(next_line)
+                if active_face.caret.mark is not None and active_face.caret.mark >= block_start:
+                    active_face.caret.mark += len(next_line)
+        else:
+            return
+        active_face.document.set_style(
+            0,
+            len(active_face.document.text),
+            {"font_name": "Consolas", "font_size": 14, "color": (*active_face.font_color, 255)},
+        )
+        active_face.mark_preview_dirty()
+
+    def _delete_word(self, direction):
+        active_face = self.faces[self.current_face_index]
+        if not active_face.caret:
+            return
+        selection = self._selection_range(active_face.caret)
+        text = active_face.document.text
+        if selection:
+            start, end = selection
+        else:
+            pos = max(0, min(active_face.caret.position, len(text)))
+            if direction == "left":
+                start = pos
+                while start > 0 and text[start - 1].isspace():
+                    start -= 1
+                while start > 0 and (text[start - 1].isalnum() or text[start - 1] == "_"):
+                    start -= 1
+                end = pos
+            else:
+                end = pos
+                while end < len(text) and text[end].isspace():
+                    end += 1
+                while end < len(text) and (text[end].isalnum() or text[end] == "_"):
+                    end += 1
+                start = pos
+        if start == end:
+            return
+        active_face.record_undo()
+        active_face.document.delete_text(start, end)
+        active_face.caret.position = start
+        active_face.caret.mark = None
+        active_face.mark_preview_dirty()
+
+    def _copy_selection_or_line(self):
+        active_face = self.faces[self.current_face_index]
+        if not active_face.caret:
+            return
+        selection = self._selection_range(active_face.caret)
+        text = active_face.document.text
+        if selection:
+            start, end = selection
+            clip_text = text[start:end]
+        else:
+            line_start, line_end = self._line_bounds(text, active_face.caret.position)
+            clip_text = text[line_start:line_end]
+        self.set_clipboard_text(clip_text)
+
+    def _cut_selection_or_line(self):
+        active_face = self.faces[self.current_face_index]
+        if not active_face.caret:
+            return
+        selection = self._selection_range(active_face.caret)
+        text = active_face.document.text
+        if selection:
+            start, end = selection
+        else:
+            start, end = self._line_bounds(text, active_face.caret.position)
+        if start == end:
+            return
+        self.set_clipboard_text(text[start:end])
+        active_face.record_undo()
+        active_face.document.delete_text(start, end)
+        active_face.caret.position = min(start, len(active_face.document.text))
+        active_face.caret.mark = None
+        active_face.mark_preview_dirty()
+
+    def _delete_current_line(self):
+        active_face = self.faces[self.current_face_index]
+        if not active_face.caret:
+            return
+        text = active_face.document.text
+        line_start, line_end = self._line_bounds(text, active_face.caret.position)
+        if line_start == line_end:
+            return
+        active_face.record_undo()
+        active_face.document.delete_text(line_start, line_end)
+        active_face.caret.position = min(line_start, len(active_face.document.text))
+        active_face.caret.mark = None
+        active_face.mark_preview_dirty()
+
+    def _handle_line_edge_motion(self, motion, select=False):
+        begin_file = getattr(key, "MOTION_BEGINNING_OF_FILE", None)
+        begin_doc = getattr(key, "MOTION_BEGINNING_OF_DOCUMENT", None)
+        end_file = getattr(key, "MOTION_END_OF_FILE", None)
+        end_doc = getattr(key, "MOTION_END_OF_DOCUMENT", None)
+        if self._held_modifiers & key.MOD_CTRL:
+            return False
         now = time.time()
-        if now - self._last_key_time > 0.5:
-            return False
-        if self._last_key_modifiers & key.MOD_CTRL:
-            return False
-        num_home = getattr(key, "NUM_HOME", None)
-        return self._last_key_symbol in {key.HOME, num_home}
+        if now - self._last_key_time <= 0.3:
+            num_home = getattr(key, "NUM_HOME", None)
+            num_end = getattr(key, "NUM_END", None)
+            if self._last_key_symbol in {key.HOME, num_home}:
+                self._move_caret_to_line_start(select=select)
+                return True
+            if self._last_key_symbol in {key.END, num_end}:
+                self._move_caret_to_line_end(select=select)
+                return True
+        if motion in {key.MOTION_BEGINNING_OF_LINE, begin_file, begin_doc}:
+            self._move_caret_to_line_start(select=select)
+            return True
+        if motion in {key.MOTION_END_OF_LINE, end_file, end_doc}:
+            self._move_caret_to_line_end(select=select)
+            return True
+        return False
 
     def _ensure_scrollbar(self):
         if self._scrollbar_track is None:
@@ -1737,6 +2054,19 @@ class NotesCubedApp(pyglet.window.Window):
             return False
         x0, y0, x1, y1 = self._settings_panel_bounds
         return x0 <= x <= x1 and y0 <= y <= y1
+
+    def _settings_click_coords(self, x, y):
+        if not self._settings_panel_bounds:
+            return x, y
+        try:
+            fb_w, fb_h = self.get_framebuffer_size()
+        except Exception:
+            return x, y
+        if not fb_w or not fb_h or fb_w == self.width or fb_h == self.height:
+            return x, y
+        scale_x = self.width / float(fb_w)
+        scale_y = self.height / float(fb_h)
+        return x * scale_x, y * scale_y
 
     def _update_settings_ui(self):
         self._ensure_settings_ui()
@@ -2031,6 +2361,7 @@ class NotesCubedApp(pyglet.window.Window):
     def _handle_settings_click(self, x, y):
         if not self.settings_open or not self._settings_panel_bounds:
             return False
+        x, y = self._settings_click_coords(x, y)
         if not self._settings_panel_hit(x, y):
             return False
         face = self.faces[self.current_face_index]
@@ -2552,11 +2883,13 @@ class NotesCubedApp(pyglet.window.Window):
     def on_text_motion(self, motion):
         if self.settings_open and self._settings_input_target:
             return
+        if self._suppress_next_motion:
+            self._suppress_next_motion = False
+            return
         if self.edit_mode:
             active_face = self.faces[self.current_face_index]
             if active_face.caret:
-                if self._should_override_home_motion(motion):
-                    self._move_caret_to_line_start(select=False)
+                if self._handle_line_edge_motion(motion, select=False):
                     return
                 if motion in (key.MOTION_BACKSPACE, key.MOTION_DELETE, key.MOTION_PASTE):
                     active_face.record_undo()
@@ -2567,16 +2900,21 @@ class NotesCubedApp(pyglet.window.Window):
     def on_text_motion_select(self, motion):
         if self.settings_open and self._settings_input_target:
             return
+        if self._suppress_next_motion:
+            self._suppress_next_motion = False
+            return
         if self.edit_mode:
             active_face = self.faces[self.current_face_index]
             if active_face.caret:
-                if self._should_override_home_motion(motion):
-                    self._move_caret_to_line_start(select=True)
+                if self._handle_line_edge_motion(motion, select=True):
                     return
                 active_face.caret.on_text_motion_select(motion)
                 active_face.mark_preview_dirty()
 
     def on_key_press(self, symbol, modifiers):
+        self._held_modifiers = modifiers
+        self._last_key_symbol = symbol
+        self._last_key_time = time.time()
         if self.settings_open and self._settings_input_target:
             if symbol in (key.ENTER, key.NUM_ENTER):
                 self._apply_rgb_input()
@@ -2586,22 +2924,54 @@ class NotesCubedApp(pyglet.window.Window):
                 self._settings_input_target = None
                 self._settings_input_text = ""
             return
-        self._last_key_symbol = symbol
-        self._last_key_modifiers = modifiers
-        self._last_key_time = time.time()
-        if self.edit_mode and symbol in (key.HOME, getattr(key, "NUM_HOME", None)) and not (modifiers & key.MOD_CTRL):
-            if modifiers & key.MOD_SHIFT:
-                self._move_caret_to_line_start(select=True)
-            else:
-                self._move_caret_to_line_start(select=False)
+        if self.edit_mode and symbol == key.TAB and (modifiers & key.MOD_SHIFT):
+            self._unindent_lines()
             return
         if self.edit_mode and symbol == key.TAB:
             active_face = self.faces[self.current_face_index]
-            if active_face.caret:
+            if active_face.caret and self._selection_range(active_face.caret):
+                self._indent_lines()
+            elif active_face.caret:
                 active_face.record_undo()
                 active_face.caret.on_text("\t")
                 active_face.mark_preview_dirty()
             return
+        if self.edit_mode and (modifiers & key.MOD_CTRL):
+            if symbol == key.C:
+                self._copy_selection_or_line()
+                return
+            if symbol == key.X:
+                self._cut_selection_or_line()
+                return
+            if symbol == key.V or (modifiers & key.MOD_SHIFT and symbol == key.V):
+                active_face = self.faces[self.current_face_index]
+                if active_face.caret:
+                    active_face.record_undo()
+                    active_face.caret.on_text_motion(key.MOTION_PASTE)
+                    active_face.mark_preview_dirty()
+                    self._suppress_next_motion = True
+                return
+            if symbol == key.D:
+                self._duplicate_lines()
+                return
+            if symbol == key.L:
+                self._delete_current_line()
+                return
+            if symbol == key.BACKSPACE:
+                self._delete_word("left")
+                self._suppress_next_motion = True
+                return
+            if symbol == key.DELETE:
+                self._delete_word("right")
+                self._suppress_next_motion = True
+                return
+        if self.edit_mode and (modifiers & key.MOD_ALT):
+            if symbol == key.UP:
+                self._move_lines("up", copy=bool(modifiers & key.MOD_SHIFT))
+                return
+            if symbol == key.DOWN:
+                self._move_lines("down", copy=bool(modifiers & key.MOD_SHIFT))
+                return
         if not self.edit_mode and symbol in (key.LEFT, key.RIGHT, key.UP, key.DOWN):
             self._rotate_via_keys(symbol, return_to_edit=False, play_sound=True)
             return
@@ -2644,6 +3014,9 @@ class NotesCubedApp(pyglet.window.Window):
                 self._request_redraw()
             return
         # Text editing is handled via on_text / on_text_motion events; pyglet 2.x Caret has no on_key_press.
+
+    def on_key_release(self, symbol, modifiers):
+        self._held_modifiers = modifiers
 
     def _point_in_editor(self, x, y):
         return (
