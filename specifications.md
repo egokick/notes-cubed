@@ -26,7 +26,7 @@ User-level behavior for Notes Cubed. Update this document whenever a new require
 - `Ctrl`+`A` selects all; `Ctrl`+`Z` undo; `Ctrl`+`Shift`+`Z` redo; `Ctrl`+`Y` redo.
 - `F12` saves a PNG screenshot to `data/screenshots/`.
 - `Esc` toggles rotate/edit mode (or closes the settings panel if open).
-- Double-click outside the cube minimizes the window.
+- Double-click anywhere outside the cube minimizes the window.
 
 ## On-screen keys and labels
 - Face keys snap the cube to the selected face.

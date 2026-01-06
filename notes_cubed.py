@@ -2318,21 +2318,33 @@ class NotesCubedApp(pyglet.window.Window):
                 self._last_outside_click_time = 0.0
                 self._snap_to_face(face_hit)
                 return
-            if self._point_in_cube(x, y):
-                self._last_outside_click_time = 0.0
-                self.edit_mode = True
-                self._return_to_edit_when_aligned = False
-                self.dragging = False
-                self._drag_started_outside_cube = False
-                if self._point_in_editor(x, y):
-                    self._pending_edit_click = (x, y)
-                return
-            now = time.time()
-            if now - self._last_outside_click_time <= 0.35:
-                self._last_outside_click_time = 0.0
-                self.minimize()
-            else:
+            if not self._point_in_cube(x, y):
+                now = time.time()
+                if now - self._last_outside_click_time <= 0.35:
+                    self._last_outside_click_time = 0.0
+                    self.minimize()
+                    return
                 self._last_outside_click_time = now
+                self.edit_mode = False
+                self._return_to_edit_when_aligned = False
+                self._invalidate_previews(force=True)
+                self._schedule_rotate_refresh()
+                self._request_redraw()
+                self.dragging = True
+                self._drag_started_outside_cube = True
+                self.last_mouse = (x, y)
+                self._drag_vector = self._arcball_vector(x, y)
+                return
+            self._last_outside_click_time = 0.0
+            self.edit_mode = False
+            self._return_to_edit_when_aligned = False
+            self._invalidate_previews(force=True)
+            self._schedule_rotate_refresh()
+            self._request_redraw()
+            self.dragging = True
+            self._drag_started_outside_cube = False
+            self.last_mouse = (x, y)
+            self._drag_vector = self._arcball_vector(x, y)
             return
         if self.settings_open and self._handle_settings_click(x, y):
             return
