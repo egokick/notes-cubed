@@ -34,6 +34,7 @@ DEFAULT_BACKGROUNDS = {
 DEFAULT_CONFIG = {
     "last_face": 0,
     "remote": "",
+    "git_sync": False,
     "backgrounds": {name: {"type": "color", "value": DEFAULT_BACKGROUNDS[name]} for name in FACE_NAMES},
     "font_colors": {name: [255, 255, 255] for name in FACE_NAMES},
 }
@@ -148,6 +149,8 @@ def load_config():
             data["backgrounds"][name].setdefault("mode", "scale")
     if "remote" not in data:
         data["remote"] = ""
+    if "git_sync" not in data:
+        data["git_sync"] = False
     if "last_face" not in data:
         data["last_face"] = 0
     if "font_colors" not in data:
@@ -3286,7 +3289,8 @@ class NotesCubedApp(pyglet.window.Window):
         for face in self.faces:
             face.save()
         save_config(self.config_data)
-        git_sync(f"{reason} - {self.faces[self.current_face_index].name}", self.config_data.get("remote"))
+        if self.config_data.get("git_sync"):
+            git_sync(f"{reason} - {self.faces[self.current_face_index].name}", self.config_data.get("remote"))
         self.last_save = time.time()
 
     def on_close(self):

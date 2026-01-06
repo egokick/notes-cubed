@@ -60,6 +60,6 @@ User-level behavior for Notes Cubed. Update this document whenever a new require
 
 ## Persistence and sync
 - Text and config data live in `data/` (one file per face plus `config.json`).
-- Autosave runs every 30 seconds and on exit; it saves all faces and runs Git sync.
-- Manual save (`Ctrl`+`S`) saves all faces, commits in `data/`, and pushes to `origin main` if a remote is configured.
+- Autosave runs every 30 seconds and on exit; it always saves all face text files.
+- Git sync is optional and disabled by default; when enabled, manual save (`Ctrl`+`S`) and autosave commit in `data/` and push to `origin main` if a remote is configured.
 - If Git is unavailable or push fails, the app continues running and prints a console message.

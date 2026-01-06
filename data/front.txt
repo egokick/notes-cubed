@@ -1,0 +1,18 @@
+notes-cubed
+
+
+=====
+Bugs
+=====
+
+
+
+
+
+
+1	 - add the ability to click + icon on top right of the first face, this 
+
+0 - default the colors of each face to something else
+
+1 - allow each face to become a kinito pet/tamagochi, they can make noises, you have to feed them. they're cute. 
+

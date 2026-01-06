@@ -33,7 +33,8 @@ The cube opens centered and always-on-top with no window chrome.
 
 ## Data + Git
 - Data lives in `data/` alongside the script: one file per face (`front.txt`, `right.txt`, `back.txt`, `left.txt`, `top.txt`, `bottom.txt`) plus `config.json`.
-- On `Ctrl`+`S` (and on exit) the app saves all faces, runs `git init` in `data/`, stages, and commits changes. If `config.json` contains a `remote` URL, it will attempt to push (`origin main`). If Git is missing or push fails, the app keeps running and prints a console message.
+- Autosave and `Ctrl`+`S` always write the text files.
+- Git sync is optional and disabled by default. Set `git_sync: true` in `data/config.json` to enable it; when enabled, saves run `git init` in `data/`, stage, and commit changes. If a `remote` URL is set, it attempts to push (`origin main`). If Git is missing or push fails, the app keeps running and prints a console message.
 
 ## Config
 Edit `data/config.json` to tweak backgrounds and Git remote. Example:

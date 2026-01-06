@@ -1,0 +1,65 @@
+{
+  "last_face": 3,
+  "remote": "",
+  "backgrounds": {
+    "front": {
+      "type": "color",
+      "value": "#1e1e2e"
+    },
+    "right": {
+      "type": "image",
+      "value": "C:/Users/Dextop/Pictures/Dexter stuff/vrf1Sj4w.jpeg",
+      "mode": "crop"
+    },
+    "back": {
+      "type": "image",
+      "value": "C:/Users/Dextop/buildit.mp4",
+      "mode": "scale"
+    },
+    "left": {
+      "type": "color",
+      "value": "#3c2f2f"
+    },
+    "top": {
+      "type": "color",
+      "value": "#0f3d3e"
+    },
+    "bottom": {
+      "type": "color",
+      "value": "#3a2a1a"
+    }
+  },
+  "font_colors": {
+    "front": [
+      255,
+      255,
+      255
+    ],
+    "right": [
+      240,
+      220,
+      170
+    ],
+    "back": [
+      255,
+      255,
+      255
+    ],
+    "left": [
+      255,
+      255,
+      255
+    ],
+    "top": [
+      255,
+      255,
+      255
+    ],
+    "bottom": [
+      255,
+      255,
+      255
+    ]
+  },
+  "git_sync": false
+}
