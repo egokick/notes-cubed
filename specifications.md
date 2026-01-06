@@ -52,6 +52,7 @@ User-level behavior for Notes Cubed. Update this document whenever a new require
 - A cog icon in edit mode opens per-face settings.
 - Clicking outside the settings panel closes it without triggering other actions.
 - Font color and face color can be set via preset swatches.
+- Font and face preset swatches share the same color-sorted palette, including black, white, and the primary colors.
 - Font RGB and face RGB fields prefill the current value and accept `R,G,B`, `R G B`, or hex (`#RRGGBB`/`#RGB`); `Enter` applies and `Esc` cancels.
 - Background media can be selected via a file picker (images and common video formats).
 - Image mode can be set to crop, repeat, or scale when a background image is selected.

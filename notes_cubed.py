@@ -55,7 +55,7 @@ SCROLLBAR_WIDTH = 4
 SCROLLBAR_MARGIN = 10
 SCROLLBAR_MIN_HEIGHT = 24
 SETTINGS_PANEL_WIDTH = 320
-SETTINGS_PANEL_HEIGHT = 270
+SETTINGS_PANEL_HEIGHT = 360
 SETTINGS_PANEL_PADDING = 12
 SETTINGS_SWATCH_SIZE = 14
 SETTINGS_SWATCH_GAP = 6
@@ -65,34 +65,42 @@ SETTINGS_BUTTON_WIDTH = 70
 SETTINGS_BUTTON_HEIGHT = 18
 COG_HIT_PADDING = 8
 COG_HIT_MIN_SIZE = 26
-FONT_COLOR_PRESETS = [
-    (255, 255, 255),
-    (240, 220, 170),
-    (180, 220, 255),
-    (255, 160, 160),
-    (180, 255, 200),
-    (210, 210, 210),
-    (255, 230, 120),
-    (255, 200, 120),
-    (200, 240, 255),
-    (190, 255, 180),
-    (255, 190, 220),
-    (200, 200, 120),
-]
-FACE_COLOR_PRESETS = [
+COLOR_PRESETS = [
+    (0, 0, 0),
     (30, 30, 46),
-    (16, 49, 74),
-    (45, 27, 63),
     (60, 47, 47),
-    (15, 61, 62),
-    (58, 42, 26),
-    (24, 24, 32),
-    (42, 58, 68),
-    (72, 60, 90),
-    (36, 66, 84),
-    (62, 80, 48),
+    (90, 90, 100),
+    (160, 160, 170),
+    (255, 255, 255),
+    (255, 0, 0),
+    (200, 40, 40),
+    (255, 120, 120),
+    (255, 120, 0),
+    (255, 170, 70),
+    (200, 120, 60),
     (90, 60, 40),
+    (58, 42, 26),
+    (255, 230, 0),
+    (255, 230, 120),
+    (200, 200, 120),
+    (0, 255, 0),
+    (0, 180, 90),
+    (120, 200, 120),
+    (62, 80, 48),
+    (180, 255, 200),
+    (0, 200, 200),
+    (0, 120, 140),
+    (15, 61, 62),
+    (0, 0, 255),
+    (60, 110, 200),
+    (180, 220, 255),
+    (16, 49, 74),
+    (90, 90, 200),
+    (120, 60, 140),
+    (255, 190, 220),
 ]
+FONT_COLOR_PRESETS = COLOR_PRESETS
+FACE_COLOR_PRESETS = COLOR_PRESETS
 
 
 def _setup_logging():
@@ -2125,14 +2133,21 @@ class NotesCubedApp(pyglet.window.Window):
         self.settings_labels["font"].y = y
         self.settings_labels["font"].color = (210, 210, 210, 220)
         y -= 14
+        available_width = SETTINGS_PANEL_WIDTH - pad * 2
+        swatch_stride = SETTINGS_SWATCH_SIZE + SETTINGS_SWATCH_GAP
+        per_row = max(1, int((available_width + SETTINGS_SWATCH_GAP) // swatch_stride))
         for idx, swatch in enumerate(self.font_color_swatches):
+            row = idx // per_row
+            col = idx % per_row
             rect = swatch["rect"]
-            rect.x = x + idx * (SETTINGS_SWATCH_SIZE + SETTINGS_SWATCH_GAP)
-            rect.y = y
+            rect.x = x + col * swatch_stride
+            rect.y = y - row * swatch_stride
             rect.width = SETTINGS_SWATCH_SIZE
             rect.height = SETTINGS_SWATCH_SIZE
             rect.opacity = 230
-        y -= SETTINGS_SWATCH_SIZE + 8
+        font_rows = (len(self.font_color_swatches) + per_row - 1) // per_row if self.font_color_swatches else 0
+        font_block_height = font_rows * SETTINGS_SWATCH_SIZE + max(0, font_rows - 1) * SETTINGS_SWATCH_GAP
+        y -= font_block_height + 8
         self.settings_labels["font_rgb"].x = x
         self.settings_labels["font_rgb"].y = y + 4
         self.settings_labels["font_rgb"].color = (180, 180, 180, 220)
@@ -2149,13 +2164,17 @@ class NotesCubedApp(pyglet.window.Window):
         self.settings_labels["face"].color = (210, 210, 210, 220)
         y -= 14
         for idx, swatch in enumerate(self.face_color_swatches):
+            row = idx // per_row
+            col = idx % per_row
             rect = swatch["rect"]
-            rect.x = x + idx * (SETTINGS_SWATCH_SIZE + SETTINGS_SWATCH_GAP)
-            rect.y = y
+            rect.x = x + col * swatch_stride
+            rect.y = y - row * swatch_stride
             rect.width = SETTINGS_SWATCH_SIZE
             rect.height = SETTINGS_SWATCH_SIZE
             rect.opacity = 230
-        y -= SETTINGS_SWATCH_SIZE + 8
+        face_rows = (len(self.face_color_swatches) + per_row - 1) // per_row if self.face_color_swatches else 0
+        face_block_height = face_rows * SETTINGS_SWATCH_SIZE + max(0, face_rows - 1) * SETTINGS_SWATCH_GAP
+        y -= face_block_height + 8
         self.settings_labels["face_rgb"].x = x
         self.settings_labels["face_rgb"].y = y + 4
         self.settings_labels["face_rgb"].color = (180, 180, 180, 220)

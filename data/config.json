@@ -1,10 +1,10 @@
 {
-  "last_face": 3,
+  "last_face": 0,
   "remote": "",
   "backgrounds": {
     "front": {
       "type": "color",
-      "value": "#1e1e2e"
+      "value": "#3c6ec8"
     },
     "right": {
       "type": "image",
@@ -18,7 +18,7 @@
     },
     "left": {
       "type": "color",
-      "value": "#3c2f2f"
+      "value": "#5a3c28"
     },
     "top": {
       "type": "color",
@@ -31,9 +31,9 @@
   },
   "font_colors": {
     "front": [
-      255,
-      255,
-      255
+      0,
+      0,
+      0
     ],
     "right": [
       240,
