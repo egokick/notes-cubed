@@ -56,10 +56,16 @@ User-level behavior for Notes Cubed. Update this document whenever a new require
 - Clicking Font RGB or Face RGB opens a color picker; canceling it enables manual entry.
 - Font RGB and face RGB fields prefill the current value and accept `R,G,B`, `R G B`, or hex (`#RRGGBB`/`#RGB`); `Enter` applies and `Esc` cancels.
 - Font size can be set per face from the settings panel (range 8-48, default 14).
+- Font thickness can be set per face from the settings panel (1 = normal, 2 = bold).
+- Font size and font thickness boxes include left/right arrow buttons for decrement/increment.
+- Background Preset dropdown lists images from `data/presetimages` and applies the selected image to the current face.
+- On first run (no `config.json` yet), each face background is assigned a random preset image when available.
+- A delete icon next to the preset dropdown clears the preset selection and restores the face's default background color.
 - Background media can be selected via a file picker (images and common video formats).
 - Image mode can be set to crop, repeat, or scale when a background image is selected.
 - Clearing the image restores the face's default background color.
 - Background media applies to the editor; the cube face uses the configured color.
+- Settings panel text and controls are sized up, with spacing adjusted so controls do not overlap.
 
 ## Persistence and sync
 - Text and config data live in `data/` (one file per face plus `config.json`).

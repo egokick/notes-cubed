@@ -3,8 +3,9 @@
   "remote": "",
   "backgrounds": {
     "front": {
-      "type": "color",
-      "value": "#3c6ec8"
+      "type": "image",
+      "value": "C:/Users/Dextop/Pictures/Dexter stuff/vrf1Sj4w.jpeg",
+      "mode": "scale"
     },
     "right": {
       "type": "color",
@@ -62,11 +63,19 @@
   },
   "git_sync": false,
   "font_sizes": {
-    "front": 14,
+    "front": 16,
     "right": 14,
     "back": 14,
     "left": 16,
     "top": 14,
     "bottom": 14
+  },
+  "font_weights": {
+    "front": 1,
+    "right": 1,
+    "back": 1,
+    "left": 1,
+    "top": 1,
+    "bottom": 1
   }
 }

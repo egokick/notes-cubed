@@ -1,8 +1,10 @@
 import argparse
+import copy
 import ctypes
 import logging
 import json
 import math
+import random
 import shutil
 import string
 import subprocess
@@ -22,6 +24,8 @@ from pyglet.window import key, mouse
 
 DATA_DIR = Path(__file__).parent / "data"
 CONFIG_PATH = DATA_DIR / "config.json"
+PRESET_IMAGES_DIR = DATA_DIR / "presetimages"
+PRESET_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".gif"}
 FACE_NAMES = ["front", "right", "back", "left", "top", "bottom"]
 DEFAULT_BACKGROUNDS = {
     "front": "#1e1e2e",
@@ -34,6 +38,9 @@ DEFAULT_BACKGROUNDS = {
 DEFAULT_FONT_SIZE = 14
 MIN_FONT_SIZE = 8
 MAX_FONT_SIZE = 48
+DEFAULT_FONT_WEIGHT = 1
+MIN_FONT_WEIGHT = 1
+MAX_FONT_WEIGHT = 2
 DEFAULT_CONFIG = {
     "last_face": 0,
     "remote": "",
@@ -41,6 +48,7 @@ DEFAULT_CONFIG = {
     "backgrounds": {name: {"type": "color", "value": DEFAULT_BACKGROUNDS[name]} for name in FACE_NAMES},
     "font_colors": {name: [255, 255, 255] for name in FACE_NAMES},
     "font_sizes": {name: DEFAULT_FONT_SIZE for name in FACE_NAMES},
+    "font_weights": {name: DEFAULT_FONT_WEIGHT for name in FACE_NAMES},
 }
 EDITOR_MARGIN = 80
 EDITOR_SCALE = 0.72  # fraction of window size used by editor overlay
@@ -58,15 +66,18 @@ VIDEO_PREVIEW_FPS = 15
 SCROLLBAR_WIDTH = 4
 SCROLLBAR_MARGIN = 10
 SCROLLBAR_MIN_HEIGHT = 24
-SETTINGS_PANEL_WIDTH = 320
-SETTINGS_PANEL_HEIGHT = 400
-SETTINGS_PANEL_PADDING = 12
-SETTINGS_SWATCH_SIZE = 14
-SETTINGS_SWATCH_GAP = 6
-SETTINGS_BOX_WIDTH = 110
-SETTINGS_BOX_HEIGHT = 18
-SETTINGS_BUTTON_WIDTH = 70
-SETTINGS_BUTTON_HEIGHT = 18
+SETTINGS_PANEL_WIDTH = 380
+SETTINGS_PANEL_HEIGHT = 500
+SETTINGS_PANEL_PADDING = 14
+SETTINGS_SWATCH_SIZE = 16
+SETTINGS_SWATCH_GAP = 8
+SETTINGS_BOX_WIDTH = 140
+SETTINGS_BOX_HEIGHT = 22
+SETTINGS_BUTTON_WIDTH = 86
+SETTINGS_BUTTON_HEIGHT = 20
+SETTINGS_ARROW_SIZE = 16
+SETTINGS_ARROW_GAP = 6
+SETTINGS_DROPDOWN_GAP = 3
 COG_HIT_PADDING = 8
 COG_HIT_MIN_SIZE = 26
 COLOR_PRESETS = [
@@ -135,10 +146,26 @@ def parse_color(value, fallback=(40, 40, 50)):
     return fallback
 
 
+def list_preset_images():
+    if not PRESET_IMAGES_DIR.exists():
+        return []
+    images = []
+    for entry in PRESET_IMAGES_DIR.iterdir():
+        if entry.is_file() and entry.suffix.lower() in PRESET_IMAGE_EXTS:
+            images.append(entry)
+    return sorted(images, key=lambda path: path.name.lower())
+
+
 def ensure_data_folder():
     DATA_DIR.mkdir(exist_ok=True)
     if not CONFIG_PATH.exists():
-        CONFIG_PATH.write_text(json.dumps(DEFAULT_CONFIG, indent=2), encoding="utf-8")
+        config = copy.deepcopy(DEFAULT_CONFIG)
+        presets = list_preset_images()
+        if presets:
+            for name in FACE_NAMES:
+                pick = random.choice(presets)
+                config["backgrounds"][name] = {"type": "image", "value": pick.as_posix(), "mode": "scale"}
+        CONFIG_PATH.write_text(json.dumps(config, indent=2), encoding="utf-8")
     for name in FACE_NAMES:
         path = DATA_DIR / f"{name}.txt"
         if not path.exists():
@@ -175,6 +202,11 @@ def load_config():
     for name in FACE_NAMES:
         if name not in data["font_sizes"]:
             data["font_sizes"][name] = DEFAULT_CONFIG["font_sizes"][name]
+    if "font_weights" not in data:
+        data["font_weights"] = DEFAULT_CONFIG["font_weights"]
+    for name in FACE_NAMES:
+        if name not in data["font_weights"]:
+            data["font_weights"][name] = DEFAULT_CONFIG["font_weights"][name]
     return data
 
 
@@ -696,15 +728,17 @@ class CubeRenderer:
 
 
 class FaceState:
-    def __init__(self, name, path, background_def, font_color=None, font_size=None):
+    def __init__(self, name, path, background_def, font_color=None, font_size=None, font_weight=None):
         self.name = name
         self.path = path
         self.background_def = background_def or {"type": "color", "value": DEFAULT_BACKGROUNDS[name]}
         self.font_color = tuple(int(c) for c in (font_color or (255, 255, 255))[:3])
         size = DEFAULT_FONT_SIZE if font_size is None else int(font_size)
         self.font_size = max(MIN_FONT_SIZE, min(MAX_FONT_SIZE, size))
+        weight = DEFAULT_FONT_WEIGHT if font_weight is None else int(font_weight)
+        self.font_weight = max(MIN_FONT_WEIGHT, min(MAX_FONT_WEIGHT, weight))
         self.document = pyglet.text.document.UnformattedDocument(self._load_text())
-        base_style = {"font_name": "Consolas", "font_size": self.font_size, "color": (*self.font_color, 255)}
+        base_style = self._text_style()
         self.document.set_style(0, len(self.document.text), base_style)
         self.layout = None
         self.caret = None
@@ -728,6 +762,14 @@ class FaceState:
         self.redo_stack = []
         self._history_suspended = False
         self._load_background_asset()
+
+    def _text_style(self):
+        return {
+            "font_name": "Consolas",
+            "font_size": self.font_size,
+            "color": (*self.font_color, 255),
+            "bold": self.font_weight > 1,
+        }
 
     def _load_text(self):
         try:
@@ -803,7 +845,7 @@ class FaceState:
         self._preview_doc.set_style(
             0,
             0,
-            {"font_name": "Consolas", "font_size": self.font_size, "color": (*self.font_color, 255)},
+            self._text_style(),
         )
         self._preview_layout = pyglet.text.layout.TextLayout(
             self._preview_doc,
@@ -833,7 +875,7 @@ class FaceState:
             self._preview_doc.set_style(
                 0,
                 len(self._preview_doc.text),
-                {"font_name": "Consolas", "font_size": self.font_size, "color": (*self.font_color, 255)},
+                self._text_style(),
             )
 
         prev_view = window.view
@@ -1072,7 +1114,7 @@ class FaceState:
         self.document.set_style(
             0,
             len(self.document.text),
-            {"font_name": "Consolas", "font_size": self.font_size, "color": (*self.font_color, 255)},
+            self._text_style(),
         )
         if self.caret:
             self.caret.position = min(state["position"], len(text))
@@ -1131,13 +1173,29 @@ class FaceState:
         self.document.set_style(
             0,
             len(self.document.text),
-            {"font_name": "Consolas", "font_size": self.font_size, "color": (*self.font_color, 255)},
+            self._text_style(),
         )
         if self._preview_doc:
             self._preview_doc.set_style(
                 0,
                 len(self._preview_doc.text),
-                {"font_name": "Consolas", "font_size": self.font_size, "color": (*self.font_color, 255)},
+                self._text_style(),
+            )
+        self.preview_dirty = True
+
+    def set_font_weight(self, weight):
+        weight = max(MIN_FONT_WEIGHT, min(MAX_FONT_WEIGHT, int(weight)))
+        self.font_weight = weight
+        self.document.set_style(
+            0,
+            len(self.document.text),
+            self._text_style(),
+        )
+        if self._preview_doc:
+            self._preview_doc.set_style(
+                0,
+                len(self._preview_doc.text),
+                self._text_style(),
             )
         self.preview_dirty = True
 
@@ -1249,6 +1307,7 @@ class NotesCubedApp(pyglet.window.Window):
                 config["backgrounds"].get(name),
                 config["font_colors"].get(name),
                 config.get("font_sizes", {}).get(name),
+                config.get("font_weights", {}).get(name),
             )
             face.bind_layout(self.width - 2 * EDITOR_MARGIN, self.height - 2 * EDITOR_MARGIN, window=self)
             self.faces.append(face)
@@ -1287,17 +1346,29 @@ class NotesCubedApp(pyglet.window.Window):
         self.font_size_label = None
         self.face_rgb_box = None
         self.face_rgb_label = None
+        self.font_weight_box = None
+        self.font_weight_label = None
+        self.preset_box = None
+        self.preset_label = None
+        self.preset_clear_label = None
+        self.preset_option_items = []
+        self._preset_images_cache = []
+        self._preset_dropdown_open = False
         self.image_button = None
         self.image_label = None
         self.image_info_label = None
         self.image_clear_label = None
         self.mode_buttons = []
+        self.settings_arrows = []
         self.settings_open = False
         self._settings_input_target = None
         self._settings_input_text = ""
         self._settings_panel_bounds = None
         self._settings_font_rgb_bounds = None
         self._settings_font_size_bounds = None
+        self._settings_font_weight_bounds = None
+        self._settings_preset_bounds = None
+        self._settings_preset_clear_bounds = None
         self._settings_face_rgb_bounds = None
         self._settings_image_bounds = None
         self._settings_image_clear_bounds = None
@@ -1784,7 +1855,12 @@ class NotesCubedApp(pyglet.window.Window):
         active_face.document.set_style(
             0,
             len(active_face.document.text),
-            {"font_name": "Consolas", "font_size": active_face.font_size, "color": (*active_face.font_color, 255)},
+            {
+                "font_name": "Consolas",
+                "font_size": active_face.font_size,
+                "color": (*active_face.font_color, 255),
+                "bold": active_face.font_weight > 1,
+            },
         )
         active_face.mark_preview_dirty()
 
@@ -1935,7 +2011,7 @@ class NotesCubedApp(pyglet.window.Window):
         if self.cog_label is None:
             self.cog_label = pyglet.text.Label(
                 "⚙",
-                font_size=12,
+                font_size=14,
                 x=0,
                 y=0,
                 anchor_x="center",
@@ -1955,7 +2031,7 @@ class NotesCubedApp(pyglet.window.Window):
             self.settings_panel.opacity = 235
             self.settings_title = pyglet.text.Label(
                 "Face settings",
-                font_size=12,
+                font_size=14,
                 x=0,
                 y=0,
                 color=(240, 240, 240, 230),
@@ -1963,7 +2039,7 @@ class NotesCubedApp(pyglet.window.Window):
             )
             self.settings_labels["font"] = pyglet.text.Label(
                 "Font color",
-                font_size=10,
+                font_size=11,
                 x=0,
                 y=0,
                 color=(210, 210, 210, 220),
@@ -1971,7 +2047,7 @@ class NotesCubedApp(pyglet.window.Window):
             )
             self.settings_labels["face"] = pyglet.text.Label(
                 "Face color",
-                font_size=10,
+                font_size=11,
                 x=0,
                 y=0,
                 color=(210, 210, 210, 220),
@@ -1979,7 +2055,7 @@ class NotesCubedApp(pyglet.window.Window):
             )
             self.settings_labels["font_rgb"] = pyglet.text.Label(
                 "Font RGB",
-                font_size=9,
+                font_size=10,
                 x=0,
                 y=0,
                 color=(180, 180, 180, 220),
@@ -1987,7 +2063,23 @@ class NotesCubedApp(pyglet.window.Window):
             )
             self.settings_labels["font_size"] = pyglet.text.Label(
                 "Font size",
-                font_size=9,
+                font_size=10,
+                x=0,
+                y=0,
+                color=(180, 180, 180, 220),
+                batch=self.settings_batch,
+            )
+            self.settings_labels["font_weight"] = pyglet.text.Label(
+                "Font thickness",
+                font_size=10,
+                x=0,
+                y=0,
+                color=(180, 180, 180, 220),
+                batch=self.settings_batch,
+            )
+            self.settings_labels["preset"] = pyglet.text.Label(
+                "Background preset",
+                font_size=10,
                 x=0,
                 y=0,
                 color=(180, 180, 180, 220),
@@ -1995,7 +2087,7 @@ class NotesCubedApp(pyglet.window.Window):
             )
             self.settings_labels["face_rgb"] = pyglet.text.Label(
                 "Face RGB",
-                font_size=9,
+                font_size=10,
                 x=0,
                 y=0,
                 color=(180, 180, 180, 220),
@@ -2003,7 +2095,7 @@ class NotesCubedApp(pyglet.window.Window):
             )
             self.settings_labels["image"] = pyglet.text.Label(
                 "Image",
-                font_size=10,
+                font_size=11,
                 x=0,
                 y=0,
                 color=(210, 210, 210, 220),
@@ -2011,7 +2103,7 @@ class NotesCubedApp(pyglet.window.Window):
             )
             self.settings_labels["mode"] = pyglet.text.Label(
                 "Image mode",
-                font_size=9,
+                font_size=10,
                 x=0,
                 y=0,
                 color=(180, 180, 180, 220),
@@ -2029,7 +2121,7 @@ class NotesCubedApp(pyglet.window.Window):
             self.font_rgb_box.opacity = 220
             self.font_rgb_label = pyglet.text.Label(
                 "",
-                font_size=9,
+                font_size=10,
                 x=0,
                 y=0,
                 color=(230, 230, 230, 230),
@@ -2039,17 +2131,47 @@ class NotesCubedApp(pyglet.window.Window):
             self.font_size_box.opacity = 220
             self.font_size_label = pyglet.text.Label(
                 "",
-                font_size=9,
+                font_size=10,
                 x=0,
                 y=0,
                 color=(230, 230, 230, 230),
+                batch=self.settings_batch,
+            )
+            self.font_weight_box = shapes.Rectangle(0, 0, SETTINGS_BOX_WIDTH, SETTINGS_BOX_HEIGHT, color=(35, 35, 45), batch=self.settings_batch)
+            self.font_weight_box.opacity = 220
+            self.font_weight_label = pyglet.text.Label(
+                "",
+                font_size=10,
+                x=0,
+                y=0,
+                color=(230, 230, 230, 230),
+                batch=self.settings_batch,
+            )
+            self.preset_box = shapes.Rectangle(0, 0, SETTINGS_BOX_WIDTH + 40, SETTINGS_BOX_HEIGHT, color=(35, 35, 45), batch=self.settings_batch)
+            self.preset_box.opacity = 220
+            self.preset_label = pyglet.text.Label(
+                "",
+                font_size=10,
+                x=0,
+                y=0,
+                color=(230, 230, 230, 230),
+                batch=self.settings_batch,
+            )
+            self.preset_clear_label = pyglet.text.Label(
+                "x",
+                font_size=10,
+                x=0,
+                y=0,
+                color=(230, 180, 180, 220),
+                anchor_x="center",
+                anchor_y="center",
                 batch=self.settings_batch,
             )
             self.face_rgb_box = shapes.Rectangle(0, 0, SETTINGS_BOX_WIDTH, SETTINGS_BOX_HEIGHT, color=(35, 35, 45), batch=self.settings_batch)
             self.face_rgb_box.opacity = 220
             self.face_rgb_label = pyglet.text.Label(
                 "",
-                font_size=9,
+                font_size=10,
                 x=0,
                 y=0,
                 color=(230, 230, 230, 230),
@@ -2059,7 +2181,7 @@ class NotesCubedApp(pyglet.window.Window):
             self.image_button.opacity = 220
             self.image_label = pyglet.text.Label(
                 "",
-                font_size=9,
+                font_size=10,
                 x=0,
                 y=0,
                 color=(230, 230, 230, 230),
@@ -2067,7 +2189,7 @@ class NotesCubedApp(pyglet.window.Window):
             )
             self.image_info_label = pyglet.text.Label(
                 "",
-                font_size=8,
+                font_size=9,
                 x=0,
                 y=0,
                 color=(170, 170, 170, 200),
@@ -2075,7 +2197,7 @@ class NotesCubedApp(pyglet.window.Window):
             )
             self.image_clear_label = pyglet.text.Label(
                 "x",
-                font_size=10,
+                font_size=11,
                 x=0,
                 y=0,
                 color=(230, 180, 180, 220),
@@ -2088,7 +2210,7 @@ class NotesCubedApp(pyglet.window.Window):
                 rect.opacity = 220
                 label = pyglet.text.Label(
                     name,
-                    font_size=9,
+                    font_size=10,
                     x=0,
                     y=0,
                     color=(220, 220, 220, 220),
@@ -2097,6 +2219,21 @@ class NotesCubedApp(pyglet.window.Window):
                     batch=self.settings_batch,
                 )
                 self.mode_buttons.append({"name": name, "rect": rect, "label": label})
+            for target in ("font_size", "font_weight"):
+                for direction, glyph in ((-1, "<"), (1, ">")):
+                    rect = shapes.Rectangle(0, 0, SETTINGS_ARROW_SIZE, SETTINGS_BOX_HEIGHT, color=(40, 40, 55), batch=self.settings_batch)
+                    rect.opacity = 220
+                    label = pyglet.text.Label(
+                        glyph,
+                        font_size=10,
+                        x=0,
+                        y=0,
+                        color=(230, 230, 230, 230),
+                        anchor_x="center",
+                        anchor_y="center",
+                        batch=self.settings_batch,
+                    )
+                    self.settings_arrows.append({"target": target, "direction": direction, "rect": rect, "label": label})
 
     def _cog_hit(self, x, y):
         if not self.cog_label:
@@ -2138,6 +2275,78 @@ class NotesCubedApp(pyglet.window.Window):
                 return True
         return False
 
+    def _position_setting_arrows(self, target, box):
+        for arrow in self.settings_arrows:
+            if arrow["target"] != target:
+                continue
+            rect = arrow["rect"]
+            rect.width = SETTINGS_ARROW_SIZE
+            rect.height = SETTINGS_BOX_HEIGHT
+            if arrow["direction"] < 0:
+                rect.x = box.x - SETTINGS_ARROW_GAP - SETTINGS_ARROW_SIZE
+            else:
+                rect.x = box.x + box.width + SETTINGS_ARROW_GAP
+            rect.y = box.y
+            rect.opacity = 220
+            arrow["label"].x = rect.x + rect.width / 2
+            arrow["label"].y = rect.y + rect.height / 2
+            arrow["label"].color = (230, 230, 230, 230)
+
+    def _sync_preset_dropdown(self, preset_images):
+        if self._preset_images_cache == preset_images:
+            return
+        for item in self.preset_option_items:
+            item["rect"].delete()
+            item["label"].delete()
+        self.preset_option_items = []
+        self._preset_images_cache = list(preset_images)
+        for path in preset_images:
+            rect = shapes.Rectangle(0, 0, self.preset_box.width, SETTINGS_BOX_HEIGHT, color=(35, 35, 45), batch=self.settings_batch)
+            rect.opacity = 0
+            label = pyglet.text.Label(
+                path.name,
+                font_size=10,
+                x=0,
+                y=0,
+                color=(230, 230, 230, 0),
+                anchor_x="left",
+                anchor_y="baseline",
+                batch=self.settings_batch,
+            )
+            self.preset_option_items.append({"path": path, "rect": rect, "label": label})
+
+    def _layout_preset_dropdown(self, preset_images, panel_y, pad):
+        if not self._preset_dropdown_open or not preset_images:
+            for item in self.preset_option_items:
+                item["rect"].opacity = 0
+                item["label"].color = (*item["label"].color[:3], 0)
+            return
+        item_height = SETTINGS_BOX_HEIGHT
+        total_height = len(preset_images) * item_height + max(0, len(preset_images) - 1) * SETTINGS_DROPDOWN_GAP
+        space_below = self.preset_box.y - (panel_y + pad)
+        drop_up = total_height > space_below
+        if drop_up:
+            start_y = self.preset_box.y + self.preset_box.height + SETTINGS_DROPDOWN_GAP
+        else:
+            start_y = self.preset_box.y - item_height - SETTINGS_DROPDOWN_GAP
+        for idx, item in enumerate(self.preset_option_items):
+            rect = item["rect"]
+            rect.width = self.preset_box.width
+            rect.height = item_height
+            rect.x = self.preset_box.x
+            if drop_up:
+                rect.y = start_y + idx * (item_height + SETTINGS_DROPDOWN_GAP)
+            else:
+                rect.y = start_y - idx * (item_height + SETTINGS_DROPDOWN_GAP)
+            rect.opacity = 235
+            label = item["label"]
+            label.text = item["path"].name
+            if len(label.text) > 22:
+                label.text = label.text[:19] + "..."
+            label.x = rect.x + 6
+            label.y = rect.y + 4
+            label.color = (230, 230, 230, 230)
+
     def _update_settings_ui(self):
         self._ensure_settings_ui()
         pad = SETTINGS_PANEL_PADDING
@@ -2147,20 +2356,44 @@ class NotesCubedApp(pyglet.window.Window):
         self.cog_label.y = cog_y
         if not self.settings_open:
             self.settings_panel.opacity = 0
+            self._preset_dropdown_open = False
             if self.settings_title:
                 self.settings_title.color = (240, 240, 240, 0)
             for label in self.settings_labels.values():
                 label.color = (*label.color[:3], 0)
             for swatch in self.font_color_swatches + self.face_color_swatches:
                 swatch["rect"].opacity = 0
-            for item in (self.font_rgb_box, self.font_size_box, self.face_rgb_box, self.image_button):
+            for item in (
+                self.font_rgb_box,
+                self.font_size_box,
+                self.font_weight_box,
+                self.preset_box,
+                self.face_rgb_box,
+                self.image_button,
+            ):
                 if item:
                     item.opacity = 0
-            for label in (self.font_rgb_label, self.font_size_label, self.face_rgb_label, self.image_label, self.image_info_label):
+            for label in (
+                self.font_rgb_label,
+                self.font_size_label,
+                self.font_weight_label,
+                self.preset_label,
+                self.face_rgb_label,
+                self.image_label,
+                self.image_info_label,
+            ):
                 if label:
                     label.color = (*label.color[:3], 0)
             if self.image_clear_label:
                 self.image_clear_label.color = (*self.image_clear_label.color[:3], 0)
+            if self.preset_clear_label:
+                self.preset_clear_label.color = (*self.preset_clear_label.color[:3], 0)
+            for arrow in self.settings_arrows:
+                arrow["rect"].opacity = 0
+                arrow["label"].color = (*arrow["label"].color[:3], 0)
+            for item in self.preset_option_items:
+                item["rect"].opacity = 0
+                item["label"].color = (*item["label"].color[:3], 0)
             for btn in self.mode_buttons:
                 btn["rect"].opacity = 0
                 btn["label"].color = (*btn["label"].color[:3], 0)
@@ -2230,6 +2463,20 @@ class NotesCubedApp(pyglet.window.Window):
         self.font_size_label.x = self.font_size_box.x + 6
         self.font_size_label.y = self.font_size_box.y + 4
         self.font_size_label.color = (230, 230, 230, 230)
+        self._position_setting_arrows("font_size", self.font_size_box)
+        y -= SETTINGS_BOX_HEIGHT + 12
+        self.settings_labels["font_weight"].x = x
+        self.settings_labels["font_weight"].y = y + 4
+        self.settings_labels["font_weight"].color = (180, 180, 180, 220)
+        self.font_weight_box.x = x + 70
+        self.font_weight_box.y = y
+        self.font_weight_box.width = SETTINGS_BOX_WIDTH
+        self.font_weight_box.height = SETTINGS_BOX_HEIGHT
+        self.font_weight_box.opacity = 230
+        self.font_weight_label.x = self.font_weight_box.x + 6
+        self.font_weight_label.y = self.font_weight_box.y + 4
+        self.font_weight_label.color = (230, 230, 230, 230)
+        self._position_setting_arrows("font_weight", self.font_weight_box)
         y -= SETTINGS_BOX_HEIGHT + 12
         self.settings_labels["face"].x = x
         self.settings_labels["face"].y = y
@@ -2258,6 +2505,18 @@ class NotesCubedApp(pyglet.window.Window):
         self.face_rgb_label.x = self.face_rgb_box.x + 6
         self.face_rgb_label.y = self.face_rgb_box.y + 4
         self.face_rgb_label.color = (230, 230, 230, 230)
+        y -= SETTINGS_BOX_HEIGHT + 12
+        self.settings_labels["preset"].x = x
+        self.settings_labels["preset"].y = y + 4
+        self.settings_labels["preset"].color = (180, 180, 180, 220)
+        self.preset_box.x = x + 70
+        self.preset_box.y = y
+        self.preset_box.width = SETTINGS_BOX_WIDTH + 40
+        self.preset_box.height = SETTINGS_BOX_HEIGHT
+        self.preset_box.opacity = 230
+        self.preset_label.x = self.preset_box.x + 6
+        self.preset_label.y = self.preset_box.y + 4
+        self.preset_label.color = (230, 230, 230, 230)
         y -= SETTINGS_BOX_HEIGHT + 12
         self.settings_labels["image"].x = x
         self.settings_labels["image"].y = y + 4
@@ -2299,6 +2558,20 @@ class NotesCubedApp(pyglet.window.Window):
             str(c) for c in face.font_color
         )
         font_size_text = self._settings_input_text if self._settings_input_target == "font_size" else str(face.font_size)
+        font_weight_text = self._settings_input_text if self._settings_input_target == "font_weight" else str(face.font_weight)
+        preset_images = list_preset_images()
+        preset_names = {path.name: path for path in preset_images}
+        preset_name = "None"
+        preset_is_match = False
+        if face.background_def.get("type") == "image":
+            current_name = Path(str(face.background_def.get("value", ""))).name
+            if current_name in preset_names:
+                preset_name = current_name
+                preset_is_match = True
+            else:
+                preset_name = "Custom"
+        if len(preset_name) > 22:
+            preset_name = preset_name[:19] + "..."
         if face.background_def.get("type") == "color":
             face_color = parse_color(face.background_def.get("value"))
         else:
@@ -2308,7 +2581,9 @@ class NotesCubedApp(pyglet.window.Window):
         )
         self.font_rgb_label.text = font_rgb_text
         self.font_size_label.text = font_size_text
+        self.font_weight_label.text = font_weight_text
         self.face_rgb_label.text = face_rgb_text
+        self.preset_label.text = preset_name
         if self._settings_input_target == "font_rgb":
             self.font_rgb_box.color = (55, 55, 70)
         else:
@@ -2317,6 +2592,10 @@ class NotesCubedApp(pyglet.window.Window):
             self.font_size_box.color = (55, 55, 70)
         else:
             self.font_size_box.color = (35, 35, 45)
+        if self._settings_input_target == "font_weight":
+            self.font_weight_box.color = (55, 55, 70)
+        else:
+            self.font_weight_box.color = (35, 35, 45)
         if self._settings_input_target == "face_rgb":
             self.face_rgb_box.color = (55, 55, 70)
         else:
@@ -2340,10 +2619,19 @@ class NotesCubedApp(pyglet.window.Window):
                     f"{width * mult}x{height * mult}" for mult in range(1, 4)
                 )
                 image_info = f"{width}x{height} -> {multiples}"
-        if len(image_name) > 18:
-            image_name = image_name[:15] + "..."
+        if len(image_name) > 22:
+            image_name = image_name[:19] + "..."
         self.image_label.text = image_name
         self.image_info_label.text = image_info
+        self._sync_preset_dropdown(preset_images)
+        self._layout_preset_dropdown(preset_images, panel_y, pad)
+        if self.preset_clear_label:
+            self.preset_clear_label.x = self.preset_box.x + self.preset_box.width - 10
+            self.preset_clear_label.y = self.preset_box.y + self.preset_box.height / 2
+            if preset_is_match:
+                self.preset_clear_label.color = (230, 180, 180, 220)
+            else:
+                self.preset_clear_label.color = (230, 180, 180, 0)
         if self.image_clear_label:
             if face.background_def.get("type") == "image":
                 self.image_clear_label.color = (230, 180, 180, 220)
@@ -2374,6 +2662,26 @@ class NotesCubedApp(pyglet.window.Window):
             self.font_size_box.x + self.font_size_box.width,
             self.font_size_box.y + self.font_size_box.height,
         )
+        self._settings_font_weight_bounds = (
+            self.font_weight_box.x,
+            self.font_weight_box.y,
+            self.font_weight_box.x + self.font_weight_box.width,
+            self.font_weight_box.y + self.font_weight_box.height,
+        )
+        self._settings_preset_bounds = (
+            self.preset_box.x,
+            self.preset_box.y,
+            self.preset_box.x + self.preset_box.width,
+            self.preset_box.y + self.preset_box.height,
+        )
+        if self.preset_clear_label:
+            clear_size = max(10, self.preset_clear_label.content_width + 6)
+            self._settings_preset_clear_bounds = (
+                self.preset_clear_label.x - clear_size / 2,
+                self.preset_clear_label.y - clear_size / 2,
+                self.preset_clear_label.x + clear_size / 2,
+                self.preset_clear_label.y + clear_size / 2,
+            )
         self._settings_face_rgb_bounds = (
             self.face_rgb_box.x,
             self.face_rgb_box.y,
@@ -2427,6 +2735,16 @@ class NotesCubedApp(pyglet.window.Window):
             return None
         return max(MIN_FONT_SIZE, min(MAX_FONT_SIZE, size))
 
+    def _parse_font_weight(self, text):
+        cleaned = "".join(char for char in text.strip() if char.isdigit())
+        if not cleaned:
+            return None
+        try:
+            weight = int(cleaned)
+        except ValueError:
+            return None
+        return max(MIN_FONT_WEIGHT, min(MAX_FONT_WEIGHT, weight))
+
     def _apply_font_color(self, rgb):
         face = self.faces[self.current_face_index]
         face.set_font_color(rgb)
@@ -2437,6 +2755,12 @@ class NotesCubedApp(pyglet.window.Window):
         face = self.faces[self.current_face_index]
         face.set_font_size(size)
         self.config_data["font_sizes"][face.name] = face.font_size
+        save_config(self.config_data)
+
+    def _apply_font_weight(self, weight):
+        face = self.faces[self.current_face_index]
+        face.set_font_weight(weight)
+        self.config_data["font_weights"][face.name] = face.font_weight
         save_config(self.config_data)
 
     def _apply_face_color(self, rgb):
@@ -2455,6 +2779,12 @@ class NotesCubedApp(pyglet.window.Window):
                 self._toast(f"Enter font size {MIN_FONT_SIZE}-{MAX_FONT_SIZE}")
                 return
             self._apply_font_size(size)
+        elif self._settings_input_target == "font_weight":
+            weight = self._parse_font_weight(self._settings_input_text)
+            if weight is None:
+                self._toast(f"Enter font thickness {MIN_FONT_WEIGHT}-{MAX_FONT_WEIGHT}")
+                return
+            self._apply_font_weight(weight)
         else:
             rgb = self._parse_rgb(self._settings_input_text)
             if not rgb:
@@ -2503,11 +2833,25 @@ class NotesCubedApp(pyglet.window.Window):
             return None
         return tuple(int(max(0, min(255, c))) for c in selected)
 
+    def _step_setting_value(self, target, direction):
+        face = self.faces[self.current_face_index]
+        if target == "font_size":
+            self._apply_font_size(face.font_size + direction)
+        elif target == "font_weight":
+            self._apply_font_weight(face.font_weight + direction)
+        self._settings_input_target = None
+        self._settings_input_text = ""
+
     def _handle_settings_click(self, x, y):
         if not self.settings_open or not self._settings_panel_bounds:
             return False
+        candidates = self._settings_click_candidates(x, y)
+        if self._preset_dropdown_open:
+            for cx, cy in candidates:
+                if self._settings_click_dropdown(cx, cy):
+                    return True
         any_panel = False
-        for cx, cy in self._settings_click_candidates(x, y):
+        for cx, cy in candidates:
             if not self._settings_panel_hit(cx, cy):
                 continue
             any_panel = True
@@ -2517,6 +2861,15 @@ class NotesCubedApp(pyglet.window.Window):
 
     def _settings_click_action(self, x, y):
         face = self.faces[self.current_face_index]
+        if self._preset_dropdown_open and self._settings_preset_bounds:
+            x0, y0, x1, y1 = self._settings_preset_bounds
+            if not (x0 <= x <= x1 and y0 <= y <= y1):
+                self._preset_dropdown_open = False
+        for arrow in self.settings_arrows:
+            rect = arrow["rect"]
+            if rect.x <= x <= rect.x + rect.width and rect.y <= y <= rect.y + rect.height:
+                self._step_setting_value(arrow["target"], arrow["direction"])
+                return True
         for swatch in self.font_color_swatches:
             rect = swatch["rect"]
             if rect.x <= x <= rect.x + rect.width and rect.y <= y <= rect.y + rect.height:
@@ -2544,6 +2897,32 @@ class NotesCubedApp(pyglet.window.Window):
             if x0 <= x <= x1 and y0 <= y <= y1:
                 self._settings_input_target = "font_size"
                 self._settings_input_text = str(face.font_size)
+                return True
+        if self._settings_font_weight_bounds:
+            x0, y0, x1, y1 = self._settings_font_weight_bounds
+            if x0 <= x <= x1 and y0 <= y <= y1:
+                self._settings_input_target = "font_weight"
+                self._settings_input_text = str(face.font_weight)
+                return True
+        if self._settings_preset_bounds:
+            x0, y0, x1, y1 = self._settings_preset_bounds
+            if x0 <= x <= x1 and y0 <= y <= y1:
+                if self._preset_images_cache:
+                    self._preset_dropdown_open = not self._preset_dropdown_open
+                else:
+                    self._toast("No preset images found.")
+                return True
+        if self._settings_preset_clear_bounds:
+            x0, y0, x1, y1 = self._settings_preset_clear_bounds
+            if x0 <= x <= x1 and y0 <= y <= y1:
+                preset_names = {path.name for path in self._preset_images_cache}
+                current_name = Path(str(face.background_def.get("value", ""))).name
+                if face.background_def.get("type") == "image" and current_name in preset_names:
+                    default_hex = DEFAULT_BACKGROUNDS[face.name]
+                    face.set_background_def({"type": "color", "value": default_hex})
+                    self.config_data["backgrounds"][face.name] = {"type": "color", "value": default_hex}
+                    save_config(self.config_data)
+                self._preset_dropdown_open = False
                 return True
         if self._settings_face_rgb_bounds:
             x0, y0, x1, y1 = self._settings_face_rgb_bounds
@@ -2582,6 +2961,19 @@ class NotesCubedApp(pyglet.window.Window):
                     self.config_data["backgrounds"][face.name] = dict(face.background_def)
                     save_config(self.config_data)
                     return True
+        return False
+
+    def _settings_click_dropdown(self, x, y):
+        face = self.faces[self.current_face_index]
+        for item in self.preset_option_items:
+            rect = item["rect"]
+            if rect.x <= x <= rect.x + rect.width and rect.y <= y <= rect.y + rect.height:
+                picked = item["path"]
+                face.set_background_def({"type": "image", "value": picked.as_posix(), "mode": face.background_def.get("mode", "scale")})
+                self.config_data["backgrounds"][face.name] = dict(face.background_def)
+                save_config(self.config_data)
+                self._preset_dropdown_open = False
+                return True
         return False
 
     def _draw_face_background_image(self, face, image):
@@ -2849,6 +3241,7 @@ class NotesCubedApp(pyglet.window.Window):
         else:
             self.settings_open = False
             self._settings_input_target = None
+            self._preset_dropdown_open = False
             # Draw labels (and any active toast); editor rect is fully transparent in rotate mode.
             self.ui_batch.draw()
 
@@ -2917,11 +3310,14 @@ class NotesCubedApp(pyglet.window.Window):
             self.settings_open = not self.settings_open
             self._settings_input_target = None
             self._settings_input_text = ""
+            if not self.settings_open:
+                self._preset_dropdown_open = False
             return
         settings_closed = False
         if self.settings_open and not self._settings_panel_hit_any(x, y) and not self._cog_hit(x, y):
             self.settings_open = False
             self._settings_input_target = None
+            self._preset_dropdown_open = False
             settings_closed = True
         if self._spin_key_hit(x, y):
             self._last_outside_click_time = 0.0
@@ -3039,7 +3435,7 @@ class NotesCubedApp(pyglet.window.Window):
 
     def on_text(self, text):
         if self.settings_open and self._settings_input_target:
-            if self._settings_input_target == "font_size":
+            if self._settings_input_target in ("font_size", "font_weight"):
                 if text and all(char.isdigit() for char in text):
                     self._settings_input_text += text
             else:
@@ -3176,8 +3572,12 @@ class NotesCubedApp(pyglet.window.Window):
             return
         if symbol == key.ESCAPE:
             if self.settings_open:
+                if self._preset_dropdown_open:
+                    self._preset_dropdown_open = False
+                    return
                 self.settings_open = False
                 self._settings_input_target = None
+                self._preset_dropdown_open = False
                 return
             self.edit_mode = not self.edit_mode
             if self.edit_mode:
@@ -3486,6 +3886,7 @@ def headless_test():
             config["backgrounds"].get(name),
             config["font_colors"].get(name),
             config.get("font_sizes", {}).get(name),
+            config.get("font_weights", {}).get(name),
         )
         faces.append(face)
     for face in faces:
