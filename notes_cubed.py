@@ -1,5 +1,6 @@
 import argparse
 import ctypes
+import logging
 import json
 import math
 import shutil
@@ -76,6 +77,17 @@ FACE_COLOR_PRESETS = [
     (15, 61, 62),
     (58, 42, 26),
 ]
+
+
+def _setup_logging():
+    DATA_DIR.mkdir(exist_ok=True)
+    log_path = DATA_DIR / "debug.log"
+    logging.basicConfig(
+        filename=log_path.as_posix(),
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
+    )
+    logging.info("Logging started.")
 
 
 def parse_color(value, fallback=(40, 40, 50)):
@@ -396,6 +408,7 @@ class CubeRenderer:
         self._view = None
         self._program = self._build_program()
         self._blank_texture = pyglet.image.SolidColorImagePattern((0, 0, 0, 0)).create_image(1, 1).get_texture()
+        self._white_texture = pyglet.image.SolidColorImagePattern((255, 255, 255, 255)).create_image(1, 1).get_texture()
         self._build_geometry()
 
     def _build_geometry(self):
@@ -463,14 +476,23 @@ class CubeRenderer:
         in vec2 v_texcoord;
 
         uniform sampler2D tex0;
+        uniform sampler2D tex1;
+        uniform vec3 text_color;
 
         out vec4 final_color;
 
         void main()
         {
-            vec4 tex = texture(tex0, v_texcoord);
-            vec3 blended = mix(v_color.rgb, tex.rgb, tex.a);
-            final_color = vec4(blended, v_color.a);
+            vec4 base = texture(tex0, v_texcoord);
+            vec4 text = texture(tex1, v_texcoord);
+            float mask = max(text.a, max(text.r, max(text.g, text.b)));
+            vec3 shaded_base = base.rgb * v_color.rgb;
+            vec3 text_rgb = mix(text_color, text.rgb, step(0.003, dot(text.rgb, vec3(1.0))));
+            vec3 shaded_text = text_rgb;
+            float text_alpha = clamp(mask * 2.2, 0.0, 1.0);
+            vec3 blended = mix(shaded_base, shaded_text, text_alpha);
+            float out_alpha = max(v_color.a, text_alpha);
+            final_color = vec4(blended, out_alpha);
         }
         """
         return shader.ShaderProgram(
@@ -506,6 +528,28 @@ class CubeRenderer:
             face_tex_coords[face_name] = tex_coords
         return face_tex_coords
 
+    @staticmethod
+    def _apply_texture_bounds(tex_coords, texture):
+        if texture is None:
+            return tex_coords
+        tcoords = getattr(texture, "tex_coords", None)
+        if not tcoords or len(tcoords) < 11:
+            return tex_coords
+        us = tcoords[0::3][:4]
+        vs = tcoords[1::3][:4]
+        u_min = min(us)
+        u_max = max(us)
+        v_min = min(vs)
+        v_max = max(vs)
+        if u_min == 0.0 and v_min == 0.0 and u_max == 1.0 and v_max == 1.0:
+            return tex_coords
+        adjusted = []
+        for idx in range(0, len(tex_coords), 3):
+            u = tex_coords[idx]
+            v = tex_coords[idx + 1]
+            adjusted.extend([u_min + u * (u_max - u_min), v_min + v * (v_max - v_min), tex_coords[idx + 2]])
+        return adjusted
+
     def setup_3d(self, window, rotation):
         gl.glEnable(gl.GL_DEPTH_TEST)
         aspect = window.width / float(window.height)
@@ -518,10 +562,24 @@ class CubeRenderer:
     def draw(self, backgrounds, rotation):
         raise NotImplementedError("Use draw_textured so text stays visible on faces.")
 
-    def draw_textured(self, face_textures, backgrounds, rotation):
-        self.draw_textured_with_alpha(face_textures, backgrounds, rotation, self.face_alpha)
+    def draw_textured(self, base_textures, text_textures, rotation, text_colors=None):
+        self.draw_textured_with_alpha(
+            base_textures,
+            text_textures,
+            rotation,
+            self.face_alpha,
+            text_colors=text_colors,
+        )
 
-    def draw_textured_with_alpha(self, face_textures, backgrounds, rotation, face_alpha, sort_faces=False):
+    def draw_textured_with_alpha(
+        self,
+        base_textures,
+        text_textures,
+        rotation,
+        face_alpha,
+        sort_faces=False,
+        text_colors=None,
+    ):
         # Default pyglet shader samples a texture and adds `colors`, so draw per-face with that face's texture bound.
         indices = [0, 1, 2, 0, 2, 3]
         if self._projection is None or self._view is None:
@@ -530,6 +588,7 @@ class CubeRenderer:
         self._program["projection"] = self._projection
         self._program["view"] = self._view
         self._program["tex0"] = 0
+        self._program["tex1"] = 1
         face_names = self.face_order
         if sort_faces:
             face_names = sorted(
@@ -541,25 +600,30 @@ class CubeRenderer:
                 alpha = int(face_alpha.get(face_name, self.face_alpha))
             else:
                 alpha = int(face_alpha)
-            tex_coords = self.face_tex_coords.get(face_name) or [0.0, 0.0, 0.0] * 4
-            bg_def = (backgrounds or {}).get(face_name) or {"type": "color", "value": DEFAULT_BACKGROUNDS[face_name]}
-            if bg_def.get("type") == "color":
-                base_color = parse_color(bg_def.get("value"))
+            if isinstance(text_colors, dict):
+                face_text_color = text_colors.get(face_name, (255, 255, 255))
+            elif text_colors:
+                face_text_color = text_colors
             else:
-                base_color = parse_color(DEFAULT_BACKGROUNDS[face_name])
+                face_text_color = (255, 255, 255)
+            tex_coords = self.face_tex_coords.get(face_name) or [0.0, 0.0, 0.0] * 4
             rotated_normal = rotation_matrix_apply(self.NORMALS[face_name], rotation)
             light = max(0.0, rotated_normal[2])
             shade = 0.35 + 0.6 * light
-            shaded = (
-                int(min(255, base_color[0] * shade)),
-                int(min(255, base_color[1] * shade)),
-                int(min(255, base_color[2] * shade)),
-                alpha,
+            shade_rgb = int(max(0, min(255, 255 * shade)))
+            colors = [shade_rgb, shade_rgb, shade_rgb, alpha] * 4
+            base_texture = (base_textures or {}).get(face_name) or self._white_texture
+            text_texture = (text_textures or {}).get(face_name) or self._blank_texture
+            tex_coords = self._apply_texture_bounds(tex_coords, base_texture)
+            self._program["text_color"] = (
+                face_text_color[0] / 255.0,
+                face_text_color[1] / 255.0,
+                face_text_color[2] / 255.0,
             )
-            colors = list(shaded) * 4
-            texture = (face_textures or {}).get(face_name) or self._blank_texture
             gl.glActiveTexture(gl.GL_TEXTURE0)
-            gl.glBindTexture(texture.target, texture.id)
+            gl.glBindTexture(base_texture.target, base_texture.id)
+            gl.glActiveTexture(gl.GL_TEXTURE1)
+            gl.glBindTexture(text_texture.target, text_texture.id)
             gl.glEnable(gl.GL_BLEND)
             gl.glBlendFunc(770, 771)  # SRC_ALPHA, ONE_MINUS_SRC_ALPHA
             verts = self.face_verts[face_name]
@@ -575,6 +639,9 @@ class CubeRenderer:
             vertex_list.draw(gl.GL_TRIANGLES)
             vertex_list.delete()
 
+        gl.glActiveTexture(gl.GL_TEXTURE1)
+        gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
+        gl.glActiveTexture(gl.GL_TEXTURE0)
         gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
         self._program.stop()
 
@@ -613,6 +680,9 @@ class FaceState:
         self._preview_layout = None
         self._preview_bg = None
         self._preview_size = None
+        self._preview_text_texture = None
+        self._preview_text_fbo = None
+        self._last_preview_log_time = 0.0
         self.undo_stack = []
         self.redo_stack = []
         self._history_suspended = False
@@ -653,27 +723,41 @@ class FaceState:
         self.preview_dirty = True
 
     def preview_texture(self):
+        if self._preview_texture and getattr(self._preview_texture, "id", 1) == 0:
+            self._preview_texture = None
+            self._preview_size = None
+            self.preview_dirty = True
+            logging.info("preview texture invalidated face=%s", self.name)
         return self._preview_texture
+
+    def preview_text_texture(self):
+        if self._preview_text_texture and getattr(self._preview_text_texture, "id", 1) == 0:
+            self._preview_text_texture = None
+            self._preview_size = None
+            self.preview_dirty = True
+            logging.info("preview text texture invalidated face=%s", self.name)
+        return self._preview_text_texture
 
     def _ensure_preview_resources(self, size):
         if size <= 0:
             return
-        if self._preview_texture is not None and self._preview_size == size:
+        if (
+            self._preview_texture is not None
+            and self._preview_text_texture is not None
+            and self._preview_fbo is not None
+            and self._preview_text_fbo is not None
+            and self._preview_size == size
+        ):
             return
         self._preview_size = size
         self._preview_texture = pyglet.image.Texture.create(size, size)
         self._preview_fbo = Framebuffer()
         self._preview_fbo.attach_texture(self._preview_texture)
-        self._preview_batch = pyglet.graphics.Batch()
-        self._preview_bg = shapes.Rectangle(
-            0,
-            0,
-            size,
-            size,
-            color=(0, 0, 0),
-            batch=self._preview_batch,
-        )
-        self._preview_bg.opacity = 0
+        self._preview_text_texture = pyglet.image.Texture.create(size, size)
+        self._preview_text_fbo = Framebuffer()
+        self._preview_text_fbo.attach_texture(self._preview_text_texture)
+        self._preview_batch = None
+        self._preview_bg = None
         self._preview_doc = pyglet.text.document.UnformattedDocument("")
         self._preview_doc.set_style(
             0,
@@ -688,8 +772,10 @@ class FaceState:
             height=size - FACE_PREVIEW_PADDING * 2,
             multiline=True,
             wrap_lines=True,
-            batch=self._preview_batch,
         )
+        self._preview_layout.anchor_x = "left"
+        self._preview_layout.anchor_y = "bottom"
+        self._preview_last_text = None
 
     def render_preview_to_texture(self, window, size):
         self._ensure_preview_resources(size)
@@ -701,7 +787,7 @@ class FaceState:
             # Keep previews snappy by truncating.
             max_chars = 2000
             if len(preview_text) > max_chars:
-                preview_text = preview_text[:max_chars] + "\n…"
+                preview_text = preview_text[:max_chars] + "\n..."
             self._preview_doc.text = preview_text
             self._preview_doc.set_style(
                 0,
@@ -712,29 +798,87 @@ class FaceState:
         prev_view = window.view
         prev_proj = window.projection
         prev_viewport = window.viewport
+        prev_gl_viewport = (gl.GLint * 4)()
+        gl.glGetIntegerv(gl.GL_VIEWPORT, prev_gl_viewport)
+        prev_clear = (gl.GLfloat * 4)()
+        gl.glGetFloatv(gl.GL_COLOR_CLEAR_VALUE, prev_clear)
+        prev_scissor = gl.GLboolean()
+        gl.glGetBooleanv(gl.GL_SCISSOR_TEST, prev_scissor)
+        prev_scissor_box = (gl.GLint * 4)()
+        gl.glGetIntegerv(gl.GL_SCISSOR_BOX, prev_scissor_box)
 
         try:
+            window.projection = pyglet.math.Mat4.orthogonal_projection(
+                0, self._preview_size, 0, self._preview_size, -1, 1
+            )
+            window.view = pyglet.math.Mat4()
+            window.viewport = (0, 0, self._preview_size, self._preview_size)
+
             self._preview_fbo.bind()
             gl.glViewport(0, 0, self._preview_size, self._preview_size)
+            gl.glDisable(gl.GL_SCISSOR_TEST)
+            gl.glDisable(gl.GL_DEPTH_TEST)
+            gl.glEnable(gl.GL_BLEND)
+            gl.glBlendFunc(770, 771)  # SRC_ALPHA, ONE_MINUS_SRC_ALPHA
+            bg_color = self.background_color()
+            gl.glClearColor(bg_color[0] / 255.0, bg_color[1] / 255.0, bg_color[2] / 255.0, 1.0)
+            gl.glClear(gl.GL_COLOR_BUFFER_BIT)
+            bg_image = self.background_image()
+            if bg_image:
+                self._draw_preview_background(bg_image, self._preview_size)
+            if self._preview_layout:
+                self._preview_layout.draw()
+            self._preview_fbo.unbind()
+
+            self._preview_text_fbo.bind()
+            gl.glViewport(0, 0, self._preview_size, self._preview_size)
+            gl.glDisable(gl.GL_SCISSOR_TEST)
             gl.glDisable(gl.GL_DEPTH_TEST)
             gl.glEnable(gl.GL_BLEND)
             gl.glBlendFunc(770, 771)  # SRC_ALPHA, ONE_MINUS_SRC_ALPHA
             gl.glClearColor(0.0, 0.0, 0.0, 0.0)
             gl.glClear(gl.GL_COLOR_BUFFER_BIT)
-
-            window.projection = pyglet.math.Mat4.orthogonal_projection(
-                0, self._preview_size, 0, self._preview_size, -1, 1
-            )
-            window.view = pyglet.math.Mat4()
-            bg_image = self.background_image()
-            if bg_image:
-                self._draw_preview_background(bg_image, self._preview_size)
-            self._preview_batch.draw()
+            if self._preview_layout:
+                self._preview_layout.draw()
+            self._preview_text_fbo.unbind()
         finally:
-            self._preview_fbo.unbind()
+            gl.glViewport(*prev_gl_viewport)
+            if prev_scissor:
+                gl.glEnable(gl.GL_SCISSOR_TEST)
+                gl.glScissor(
+                    prev_scissor_box[0],
+                    prev_scissor_box[1],
+                    prev_scissor_box[2],
+                    prev_scissor_box[3],
+                )
+            else:
+                gl.glDisable(gl.GL_SCISSOR_TEST)
+            gl.glClearColor(prev_clear[0], prev_clear[1], prev_clear[2], prev_clear[3])
             window.viewport = prev_viewport
             window.projection = prev_proj
             window.view = prev_view
+
+        now = time.time()
+        if now - self._last_preview_log_time >= 2.0:
+            self._last_preview_log_time = now
+            try:
+                status = "ok" if self._preview_fbo.is_complete else Framebuffer.get_status()
+                text_status = "ok" if self._preview_text_fbo.is_complete else Framebuffer.get_status()
+                tex_id = getattr(self._preview_texture, "id", None)
+                text_tex_id = getattr(self._preview_text_texture, "id", None)
+                logging.info(
+                    "preview face=%s size=%s text_len=%s tex_id=%s text_tex_id=%s fbo=%s text_fbo=%s bg_type=%s",
+                    self.name,
+                    self._preview_size,
+                    len(self.document.text),
+                    tex_id,
+                    text_tex_id,
+                    status,
+                    text_status,
+                    self.background_def.get("type"),
+                )
+            except Exception as exc:
+                logging.info("preview log failed face=%s err=%s", self.name, exc)
 
         self.preview_dirty = False
 
@@ -936,6 +1080,8 @@ class FaceState:
         self.document.set_style(0, len(self.document.text), {"color": (*self.font_color, 255)})
         if self.caret:
             self.caret.color = (*self.font_color, 255)
+        if self._preview_doc:
+            self._preview_doc.set_style(0, len(self._preview_doc.text), {"color": (*self.font_color, 255)})
         self.preview_dirty = True
 
     def title_text(self):
@@ -1023,6 +1169,7 @@ class FaceState:
 
 class NotesCubedApp(pyglet.window.Window):
     def __init__(self, config):
+        _setup_logging()
         screen = self._get_default_screen()
         config_gl = pyglet.gl.Config(alpha_size=8, depth_size=24, double_buffer=True, sample_buffers=1, samples=4)
         super().__init__(
@@ -1098,10 +1245,13 @@ class NotesCubedApp(pyglet.window.Window):
         self._scrollbar_thumb = None
         self._toast_until = 0.0
         self._pending_screenshot_path = None
+        self._exit_after_screenshot = False
         self._mvp_3d = None
         self._cube_alpha_normal = 220
         self._cube_alpha_drag_front = 110
         self._cube_alpha_drag_other = 150
+        self._force_redraw_frames = 0
+        self._rotate_refresh_scheduled = False
         self._build_editor_overlay()
         self._build_labels()
         self._build_face_keys()
@@ -1280,6 +1430,33 @@ class NotesCubedApp(pyglet.window.Window):
         if self.edit_mode:
             return "Edit mode (click outside editor to rotate, F12 screenshot)"
         return "Rotate mode (release to snap, F12 screenshot)"
+
+    def _invalidate_previews(self, force=False):
+        for face in self.faces:
+            face.preview_dirty = True
+            if force:
+                face._preview_texture = None
+                face._preview_text_texture = None
+                face._preview_size = None
+                face._preview_fbo = None
+                face._preview_text_fbo = None
+
+    def _request_redraw(self, frames=4):
+        self._force_redraw_frames = max(self._force_redraw_frames, int(frames))
+        self.invalid = True
+
+    def _schedule_rotate_refresh(self, delay=0.15):
+        if self._rotate_refresh_scheduled:
+            return
+        self._rotate_refresh_scheduled = True
+
+        def _refresh(_dt):
+            self._rotate_refresh_scheduled = False
+            if not self.edit_mode:
+                self._invalidate_previews(force=True)
+                self._request_redraw()
+
+        pyglet.clock.schedule_once(_refresh, delay)
 
     def _apply_pending_caret(self):
         if not self._pending_edit_click:
@@ -1994,7 +2171,9 @@ class NotesCubedApp(pyglet.window.Window):
         self._mvp_3d = self.projection @ self.view
 
     def _draw_cube(self):
-        textures = {face.name: face.preview_texture() for face in self.faces if face.preview_texture()}
+        base_textures = {face.name: face.preview_texture() for face in self.faces if face.preview_texture()}
+        text_textures = {face.name: face.preview_text_texture() for face in self.faces if face.preview_text_texture()}
+        text_colors = {face.name: face.font_color for face in self.faces}
         if self.dragging:
             depths = {
                 name: rotation_matrix_apply(self.cube.face_centers[name], self.rotation)[2]
@@ -2010,11 +2189,12 @@ class NotesCubedApp(pyglet.window.Window):
             gl.glBlendFunc(770, 771)  # SRC_ALPHA, ONE_MINUS_SRC_ALPHA
             gl.glDepthMask(False)
         self.cube.draw_textured_with_alpha(
-            textures,
-            self.config_data.get("backgrounds", {}),
+            base_textures,
+            text_textures,
             self.rotation,
             face_alpha,
             sort_faces=self.dragging,
+            text_colors=text_colors,
         )
         if self.dragging:
             gl.glDepthMask(True)
@@ -2097,6 +2277,7 @@ class NotesCubedApp(pyglet.window.Window):
         self._build_editor_overlay()
         self._build_labels()
         self._build_face_keys()
+        self._invalidate_previews(force=True)
 
     def on_mouse_press(self, x, y, button, modifiers):
         if button != mouse.LEFT:
@@ -2105,6 +2286,7 @@ class NotesCubedApp(pyglet.window.Window):
             if self._spin_key_hit(x, y):
                 self.auto_spin = False
                 self.edit_mode = True
+                self._invalidate_previews(force=True)
                 return
             if not self._point_in_cube(x, y):
                 now = time.time()
@@ -2124,16 +2306,20 @@ class NotesCubedApp(pyglet.window.Window):
         if self.settings_open and not self._settings_panel_hit(x, y) and not self._cog_hit(x, y):
             self.settings_open = False
             self._settings_input_target = None
-        if self._spin_key_hit(x, y):
-            self.auto_spin = not self.auto_spin
+            if self._spin_key_hit(x, y):
+                self.auto_spin = not self.auto_spin
             if self.auto_spin:
                 _yaw, pitch = self._rotation_angles()
                 if abs(pitch) < AUTO_SPIN_TILT_DEGREES * 0.5:
                     tilt = pyglet.math.Mat4.from_rotation(math.radians(AUTO_SPIN_TILT_DEGREES), Vec3(1, 0, 0))
                     self.rotation = tilt @ self.rotation
                 self.edit_mode = False
+                self._invalidate_previews(force=True)
+                self._schedule_rotate_refresh()
+                self._request_redraw()
             else:
                 self.edit_mode = True
+                self._invalidate_previews(force=True)
             return
         face_hit = self._face_key_hit(x, y)
         if face_hit:
@@ -2156,6 +2342,9 @@ class NotesCubedApp(pyglet.window.Window):
             self._last_outside_click_time = now
             self.edit_mode = False
             self._return_to_edit_when_aligned = False
+            self._invalidate_previews(force=True)
+            self._schedule_rotate_refresh()
+            self._request_redraw()
             self.dragging = True
             self._drag_started_outside_cube = True
             self.last_mouse = (x, y)
@@ -2171,6 +2360,9 @@ class NotesCubedApp(pyglet.window.Window):
             return
         self.edit_mode = False
         self._return_to_edit_when_aligned = False
+        self._invalidate_previews(force=True)
+        self._schedule_rotate_refresh()
+        self._request_redraw()
         self.dragging = True
         self._drag_started_outside_cube = False
         self.last_mouse = (x, y)
@@ -2213,6 +2405,7 @@ class NotesCubedApp(pyglet.window.Window):
                 self._return_to_edit_when_aligned = False
             else:
                 self.edit_mode = False
+                self._request_redraw()
             self._drag_started_outside_cube = False
 
     def on_mouse_scroll(self, x, y, scroll_x, scroll_y):
@@ -2303,6 +2496,10 @@ class NotesCubedApp(pyglet.window.Window):
             self.edit_mode = not self.edit_mode
             if self.edit_mode:
                 self._return_to_edit_when_aligned = False
+            else:
+                self._invalidate_previews(force=True)
+                self._schedule_rotate_refresh()
+                self._request_redraw()
             return
         # Text editing is handled via on_text / on_text_motion events; pyglet 2.x Caret has no on_key_press.
 
@@ -2427,6 +2624,8 @@ class NotesCubedApp(pyglet.window.Window):
                 face.preview_dirty = True
             if face.preview_texture() is None:
                 face.preview_dirty = True
+            if face.preview_text_texture() is None:
+                face.preview_dirty = True
             if face._bg_player or face._bg_sprite or face._video_stream:
                 face.preview_dirty = True
         any_dirty = any(face.preview_dirty for face in self.faces)
@@ -2483,6 +2682,8 @@ class NotesCubedApp(pyglet.window.Window):
             pyglet.image.get_buffer_manager().get_color_buffer().save(path.as_posix())
             self._toast(f"Saved screenshot: {path.name}")
             print(f"Saved screenshot: {path}")
+            if self._exit_after_screenshot:
+                pyglet.app.exit()
         except Exception as exc:
             self._toast("Screenshot failed (see console).")
             print(f"Screenshot failed: {exc}")
@@ -2560,6 +2761,11 @@ class NotesCubedApp(pyglet.window.Window):
             rot = pyglet.math.Mat4.from_rotation(-self.auto_spin_speed * dt, Vec3(0, 1, 0))
             self.rotation = rot @ self.rotation
             self.invalid = True
+        if not self.edit_mode:
+            self.invalid = True
+        if self._force_redraw_frames > 0:
+            self.invalid = True
+            self._force_redraw_frames -= 1
 
     def save_all(self, reason):
         for face in self.faces:
@@ -2573,6 +2779,10 @@ class NotesCubedApp(pyglet.window.Window):
             face.close()
         self.save_all("app close")
         return super().on_close()
+
+    def on_activate(self):
+        self._invalidate_previews(force=True)
+        return None
 
 
 def headless_test():
@@ -2596,12 +2806,43 @@ def headless_test():
 def main():
     parser = argparse.ArgumentParser(description="Notes Cubed - floating cube notes")
     parser.add_argument("--headless-test", action="store_true", help="run file + git checks without UI")
+    parser.add_argument(
+        "--auto-snapshot",
+        action="store_true",
+        help="capture a rotate-mode screenshot then exit",
+    )
+    parser.add_argument(
+        "--snapshot-delay",
+        type=float,
+        default=1.0,
+        help="seconds to wait before capturing an auto snapshot",
+    )
+    parser.add_argument(
+        "--snapshot-dragging",
+        action="store_true",
+        help="render the snapshot using the dragging draw path",
+    )
     args = parser.parse_args()
     if args.headless_test:
         headless_test()
         return
     config = load_config()
     app = NotesCubedApp(config)
+    if args.auto_snapshot:
+        app.edit_mode = False
+        app.auto_spin = not args.snapshot_dragging
+        app._invalidate_previews(force=True)
+        if args.snapshot_dragging:
+            app.dragging = True
+        app._exit_after_screenshot = True
+        shots_dir = DATA_DIR / "screenshots"
+        shots_dir.mkdir(exist_ok=True)
+        snapshot_path = shots_dir / "auto-snapshot.png"
+
+        def _queue_snapshot(_dt):
+            app._pending_screenshot_path = snapshot_path
+
+        pyglet.clock.schedule_once(_queue_snapshot, max(0.0, args.snapshot_delay))
     pyglet.app.run()
 
 
