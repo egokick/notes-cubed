@@ -1458,6 +1458,25 @@ class NotesCubedApp(pyglet.window.Window):
 
         pyglet.clock.schedule_once(_refresh, delay)
 
+    def _set_auto_spin(self, enabled):
+        if enabled == self.auto_spin:
+            return
+        self.auto_spin = enabled
+        self.dragging = False
+        self._drag_vector = None
+        if self.auto_spin:
+            _yaw, pitch = self._rotation_angles()
+            if abs(pitch) < AUTO_SPIN_TILT_DEGREES * 0.5:
+                tilt = pyglet.math.Mat4.from_rotation(math.radians(AUTO_SPIN_TILT_DEGREES), Vec3(1, 0, 0))
+                self.rotation = tilt @ self.rotation
+            self.edit_mode = False
+            self._invalidate_previews(force=True)
+            self._schedule_rotate_refresh()
+            self._request_redraw()
+        else:
+            self.edit_mode = True
+            self._invalidate_previews(force=True)
+
     def _apply_pending_caret(self):
         if not self._pending_edit_click:
             return
@@ -2282,20 +2301,6 @@ class NotesCubedApp(pyglet.window.Window):
     def on_mouse_press(self, x, y, button, modifiers):
         if button != mouse.LEFT:
             return
-        if self.auto_spin:
-            if self._spin_key_hit(x, y):
-                self.auto_spin = False
-                self.edit_mode = True
-                self._invalidate_previews(force=True)
-                return
-            if not self._point_in_cube(x, y):
-                now = time.time()
-                if now - self._last_outside_click_time <= 0.35:
-                    self._last_outside_click_time = 0.0
-                    self.minimize()
-                else:
-                    self._last_outside_click_time = now
-            return
         if self.settings_open and self._handle_settings_click(x, y):
             return
         if self.edit_mode and self._cog_hit(x, y):
@@ -2303,30 +2308,35 @@ class NotesCubedApp(pyglet.window.Window):
             self._settings_input_target = None
             self._settings_input_text = ""
             return
+        settings_closed = False
         if self.settings_open and not self._settings_panel_hit(x, y) and not self._cog_hit(x, y):
             self.settings_open = False
             self._settings_input_target = None
-            if self._spin_key_hit(x, y):
-                self.auto_spin = not self.auto_spin
-            if self.auto_spin:
-                _yaw, pitch = self._rotation_angles()
-                if abs(pitch) < AUTO_SPIN_TILT_DEGREES * 0.5:
-                    tilt = pyglet.math.Mat4.from_rotation(math.radians(AUTO_SPIN_TILT_DEGREES), Vec3(1, 0, 0))
-                    self.rotation = tilt @ self.rotation
-                self.edit_mode = False
-                self._invalidate_previews(force=True)
-                self._schedule_rotate_refresh()
-                self._request_redraw()
-            else:
-                self.edit_mode = True
-                self._invalidate_previews(force=True)
+            settings_closed = True
+        if self._spin_key_hit(x, y):
+            self._last_outside_click_time = 0.0
+            self._set_auto_spin(not self.auto_spin)
             return
         face_hit = self._face_key_hit(x, y)
         if face_hit:
+            self._last_outside_click_time = 0.0
+            if self.auto_spin:
+                self._set_auto_spin(False)
             self._snap_to_face(face_hit)
             self.edit_mode = True
             self._return_to_edit_when_aligned = False
             self.dragging = False
+            return
+        if settings_closed:
+            return
+        if self.auto_spin:
+            if not self._point_in_cube(x, y):
+                now = time.time()
+                if now - self._last_outside_click_time <= 0.35:
+                    self._last_outside_click_time = 0.0
+                    self.minimize()
+                else:
+                    self._last_outside_click_time = now
             return
         if self.edit_mode and self._point_in_editor(x, y):
             self.edit_mode = True
