@@ -4,6 +4,7 @@ import logging
 import json
 import math
 import shutil
+import string
 import subprocess
 import sys
 import threading
@@ -61,6 +62,8 @@ SETTINGS_BOX_WIDTH = 110
 SETTINGS_BOX_HEIGHT = 18
 SETTINGS_BUTTON_WIDTH = 70
 SETTINGS_BUTTON_HEIGHT = 18
+COG_HIT_PADDING = 8
+COG_HIT_MIN_SIZE = 26
 FONT_COLOR_PRESETS = [
     (255, 255, 255),
     (240, 220, 170),
@@ -68,6 +71,12 @@ FONT_COLOR_PRESETS = [
     (255, 160, 160),
     (180, 255, 200),
     (210, 210, 210),
+    (255, 230, 120),
+    (255, 200, 120),
+    (200, 240, 255),
+    (190, 255, 180),
+    (255, 190, 220),
+    (200, 200, 120),
 ]
 FACE_COLOR_PRESETS = [
     (30, 30, 46),
@@ -76,6 +85,12 @@ FACE_COLOR_PRESETS = [
     (60, 47, 47),
     (15, 61, 62),
     (58, 42, 26),
+    (24, 24, 32),
+    (42, 58, 68),
+    (72, 60, 90),
+    (36, 66, 84),
+    (62, 80, 48),
+    (90, 60, 40),
 ]
 
 
@@ -579,6 +594,8 @@ class CubeRenderer:
         face_alpha,
         sort_faces=False,
         text_colors=None,
+        draw_edges=True,
+        edge_color=(0, 0, 0, 255),
     ):
         # Default pyglet shader samples a texture and adds `colors`, so draw per-face with that face's texture bound.
         indices = [0, 1, 2, 0, 2, 3]
@@ -646,14 +663,16 @@ class CubeRenderer:
         self._program.stop()
 
         # Edges (wireframe) for depth cues.
-        edge_indices = [i for edge in self.edges for i in edge]
-        pyglet.graphics.draw_indexed(
-            len(self.positions) // 3,
-            gl.GL_LINES,
-            edge_indices,
-            position=("f", self.positions),
-            colors=("Bn", [20, 20, 20, 255] * (len(self.positions) // 3)),
-        )
+        if draw_edges:
+            edge_indices = [i for edge in self.edges for i in edge]
+            gl.glLineWidth(1.0)
+            pyglet.graphics.draw_indexed(
+                len(self.positions) // 3,
+                gl.GL_LINES,
+                edge_indices,
+                position=("f", self.positions),
+                colors=("Bn", list(edge_color) * (len(self.positions) // 3)),
+            )
 
 
 class FaceState:
@@ -1244,6 +1263,9 @@ class NotesCubedApp(pyglet.window.Window):
         self._scrollbar_track = None
         self._scrollbar_thumb = None
         self._toast_until = 0.0
+        self._last_key_symbol = None
+        self._last_key_modifiers = 0
+        self._last_key_time = 0.0
         self._pending_screenshot_path = None
         self._exit_after_screenshot = False
         self._mvp_3d = None
@@ -1485,6 +1507,32 @@ class NotesCubedApp(pyglet.window.Window):
             self._activate_caret(x, y, mouse.LEFT, 0)
         self._pending_edit_click = None
 
+    def _move_caret_to_line_start(self, select=False):
+        active_face = self.faces[self.current_face_index]
+        if not active_face.caret:
+            return
+        text = active_face.document.text
+        pos = max(0, min(active_face.caret.position, len(text)))
+        line_start = text.rfind("\n", 0, pos)
+        new_pos = 0 if line_start == -1 else line_start + 1
+        if select:
+            if active_face.caret.mark is None:
+                active_face.caret.mark = pos
+        else:
+            active_face.caret.mark = None
+        active_face.caret.position = new_pos
+
+    def _should_override_home_motion(self, motion):
+        if motion == key.MOTION_BEGINNING_OF_LINE:
+            return True
+        now = time.time()
+        if now - self._last_key_time > 0.5:
+            return False
+        if self._last_key_modifiers & key.MOD_CTRL:
+            return False
+        num_home = getattr(key, "NUM_HOME", None)
+        return self._last_key_symbol in {key.HOME, num_home}
+
     def _ensure_scrollbar(self):
         if self._scrollbar_track is None:
             self._scrollbar_track = shapes.Rectangle(0, 0, 1, 1, color=(20, 20, 24))
@@ -1676,8 +1724,10 @@ class NotesCubedApp(pyglet.window.Window):
     def _cog_hit(self, x, y):
         if not self.cog_label:
             return False
-        half_w = self.cog_label.content_width / 2.0
-        half_h = self.cog_label.content_height / 2.0
+        half_w = max(self.cog_label.content_width / 2.0, COG_HIT_MIN_SIZE / 2.0)
+        half_h = max(self.cog_label.content_height / 2.0, COG_HIT_MIN_SIZE / 2.0)
+        half_w += COG_HIT_PADDING
+        half_h += COG_HIT_PADDING
         return (self.cog_label.x - half_w <= x <= self.cog_label.x + half_w) and (
             self.cog_label.y - half_h <= y <= self.cog_label.y + half_h
         )
@@ -1909,7 +1959,18 @@ class NotesCubedApp(pyglet.window.Window):
             )
 
     def _parse_rgb(self, text):
-        cleaned = text.replace(" ", ",")
+        cleaned = text.strip()
+        if not cleaned:
+            return None
+        hex_text = cleaned.lstrip("#")
+        if len(hex_text) in (3, 6) and all(c in string.hexdigits for c in hex_text):
+            if len(hex_text) == 3:
+                hex_text = "".join([c * 2 for c in hex_text])
+            try:
+                return tuple(int(hex_text[i : i + 2], 16) for i in (0, 2, 4))
+            except ValueError:
+                return None
+        cleaned = cleaned.replace(" ", ",")
         parts = [part for part in cleaned.split(",") if part]
         if len(parts) < 3:
             return None
@@ -1937,8 +1998,7 @@ class NotesCubedApp(pyglet.window.Window):
             return
         rgb = self._parse_rgb(self._settings_input_text)
         if not rgb:
-            self._settings_input_target = None
-            self._settings_input_text = ""
+            self._toast("Enter RGB like 255,128,64 or #ff8040")
             return
         if self._settings_input_target == "font_rgb":
             self._apply_font_color(rgb)
@@ -1973,6 +2033,7 @@ class NotesCubedApp(pyglet.window.Window):
             return False
         if not self._settings_panel_hit(x, y):
             return False
+        face = self.faces[self.current_face_index]
         for swatch in self.font_color_swatches:
             rect = swatch["rect"]
             if rect.x <= x <= rect.x + rect.width and rect.y <= y <= rect.y + rect.height:
@@ -1987,18 +2048,21 @@ class NotesCubedApp(pyglet.window.Window):
             x0, y0, x1, y1 = self._settings_font_rgb_bounds
             if x0 <= x <= x1 and y0 <= y <= y1:
                 self._settings_input_target = "font_rgb"
-                self._settings_input_text = ""
+                self._settings_input_text = "{},{},{}".format(*face.font_color)
                 return True
         if self._settings_face_rgb_bounds:
             x0, y0, x1, y1 = self._settings_face_rgb_bounds
             if x0 <= x <= x1 and y0 <= y <= y1:
                 self._settings_input_target = "face_rgb"
-                self._settings_input_text = ""
+                if face.background_def.get("type") == "color":
+                    face_color = parse_color(face.background_def.get("value"))
+                else:
+                    face_color = parse_color(DEFAULT_BACKGROUNDS[face.name])
+                self._settings_input_text = "{},{},{}".format(*face_color)
                 return True
         if self._settings_image_clear_bounds:
             x0, y0, x1, y1 = self._settings_image_clear_bounds
             if x0 <= x <= x1 and y0 <= y <= y1:
-                face = self.faces[self.current_face_index]
                 default_hex = DEFAULT_BACKGROUNDS[face.name]
                 face.set_background_def({"type": "color", "value": default_hex})
                 self.config_data["backgrounds"][face.name] = {"type": "color", "value": default_hex}
@@ -2009,7 +2073,6 @@ class NotesCubedApp(pyglet.window.Window):
             if x0 <= x <= x1 and y0 <= y <= y1:
                 self._select_image_for_face()
                 return True
-        face = self.faces[self.current_face_index]
         if face.background_def.get("type") == "image":
             for btn in self.mode_buttons:
                 rect = btn["rect"]
@@ -2214,6 +2277,7 @@ class NotesCubedApp(pyglet.window.Window):
             face_alpha,
             sort_faces=self.dragging,
             text_colors=text_colors,
+            draw_edges=not self.edit_mode,
         )
         if self.dragging:
             gl.glDepthMask(True)
@@ -2474,7 +2538,8 @@ class NotesCubedApp(pyglet.window.Window):
 
     def on_text(self, text):
         if self.settings_open and self._settings_input_target:
-            if text.isdigit() or text in {",", " "}:
+            allowed = set("0123456789abcdefABCDEF,# ")
+            if text and all(char in allowed for char in text):
                 self._settings_input_text += text
             return
         if self.edit_mode:
@@ -2490,6 +2555,9 @@ class NotesCubedApp(pyglet.window.Window):
         if self.edit_mode:
             active_face = self.faces[self.current_face_index]
             if active_face.caret:
+                if self._should_override_home_motion(motion):
+                    self._move_caret_to_line_start(select=False)
+                    return
                 if motion in (key.MOTION_BACKSPACE, key.MOTION_DELETE, key.MOTION_PASTE):
                     active_face.record_undo()
                 active_face.caret.on_text_motion(motion)
@@ -2502,6 +2570,9 @@ class NotesCubedApp(pyglet.window.Window):
         if self.edit_mode:
             active_face = self.faces[self.current_face_index]
             if active_face.caret:
+                if self._should_override_home_motion(motion):
+                    self._move_caret_to_line_start(select=True)
+                    return
                 active_face.caret.on_text_motion_select(motion)
                 active_face.mark_preview_dirty()
 
@@ -2514,6 +2585,22 @@ class NotesCubedApp(pyglet.window.Window):
             elif symbol == key.ESCAPE:
                 self._settings_input_target = None
                 self._settings_input_text = ""
+            return
+        self._last_key_symbol = symbol
+        self._last_key_modifiers = modifiers
+        self._last_key_time = time.time()
+        if self.edit_mode and symbol in (key.HOME, getattr(key, "NUM_HOME", None)) and not (modifiers & key.MOD_CTRL):
+            if modifiers & key.MOD_SHIFT:
+                self._move_caret_to_line_start(select=True)
+            else:
+                self._move_caret_to_line_start(select=False)
+            return
+        if self.edit_mode and symbol == key.TAB:
+            active_face = self.faces[self.current_face_index]
+            if active_face.caret:
+                active_face.record_undo()
+                active_face.caret.on_text("\t")
+                active_face.mark_preview_dirty()
             return
         if not self.edit_mode and symbol in (key.LEFT, key.RIGHT, key.UP, key.DOWN):
             self._rotate_via_keys(symbol, return_to_edit=False, play_sound=True)
