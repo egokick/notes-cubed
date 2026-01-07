@@ -1,0 +1,81 @@
+{
+  "last_face": 1,
+  "remote": "",
+  "backgrounds": {
+    "front": {
+      "type": "image",
+      "value": "C:/source/notes-cubed/data/presetimages/03-preart.jpg",
+      "mode": "scale"
+    },
+    "right": {
+      "type": "color",
+      "value": "#10314a"
+    },
+    "back": {
+      "type": "image",
+      "value": "C:/Users/Dextop/buildit.mp4",
+      "mode": "scale"
+    },
+    "left": {
+      "type": "color",
+      "value": "#e8b900"
+    },
+    "top": {
+      "type": "color",
+      "value": "#0f3d3e"
+    },
+    "bottom": {
+      "type": "color",
+      "value": "#3a2a1a"
+    }
+  },
+  "font_colors": {
+    "front": [
+      0,
+      0,
+      0
+    ],
+    "right": [
+      0,
+      0,
+      0
+    ],
+    "back": [
+      255,
+      255,
+      255
+    ],
+    "left": [
+      0,
+      0,
+      0
+    ],
+    "top": [
+      255,
+      255,
+      255
+    ],
+    "bottom": [
+      255,
+      255,
+      255
+    ]
+  },
+  "git_sync": false,
+  "font_sizes": {
+    "front": 16,
+    "right": 20,
+    "back": 14,
+    "left": 16,
+    "top": 14,
+    "bottom": 14
+  },
+  "font_weights": {
+    "front": 1,
+    "right": 1,
+    "back": 1,
+    "left": 1,
+    "top": 1,
+    "bottom": 1
+  }
+}
