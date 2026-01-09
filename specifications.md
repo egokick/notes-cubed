@@ -16,7 +16,8 @@ User-level behavior for Notes Cubed. Update this document whenever a new require
 - In edit mode, left-click drag outside the editor area rotates the cube.
 - In rotate mode, left-click drag anywhere not on UI keys rotates the cube.
 - Text positioning aligns between edit mode and rotate mode so face text does not shift.
-- Releasing after a drag snaps to the nearest face and sets it as the current face.
+- Releasing after a drag snaps to the nearest face and sets it as the current face; fast flicks continue spinning with momentum before snapping.
+- Slow drags or a pause before release skip momentum and snap immediately.
 - If the drag starts outside the cube, releasing keeps the app in rotate mode.
 - If the drag starts on the cube, releasing returns to edit mode.
 - Clicking the cube (not a UI key) in rotate mode snaps to the nearest face and returns to edit mode.

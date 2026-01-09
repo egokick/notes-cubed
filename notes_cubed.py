@@ -62,6 +62,10 @@ FACE_KEY_SPACING = 6
 FACE_KEY_MARGIN = 18
 AUTO_SPIN_SPEED = 0.35
 AUTO_SPIN_TILT_DEGREES = 12.0
+INERTIA_SPEED_THRESHOLD = 2.0
+INERTIA_STOP_SPEED = 0.5
+INERTIA_DECELERATION = 3.0
+INERTIA_RECENT_SECONDS = 0.12
 VIDEO_PREVIEW_FPS = 15
 SCROLLBAR_WIDTH = 4
 SCROLLBAR_MARGIN = 10
@@ -1326,6 +1330,13 @@ class NotesCubedApp(pyglet.window.Window):
         self.last_mouse = (0, 0)
         self._drag_vector = None
         self._drag_started_outside_cube = False
+        self._drag_last_time = None
+        self._drag_last_speed = 0.0
+        self._drag_last_axis = None
+        self._inertia_active = False
+        self._inertia_axis = None
+        self._inertia_speed = 0.0
+        self._inertia_return_to_edit = False
         self.edit_mode = True
         self._return_to_edit_when_aligned = False
         self.last_save = time.time()
@@ -1602,9 +1613,59 @@ class NotesCubedApp(pyglet.window.Window):
 
         pyglet.clock.schedule_once(_refresh, delay)
 
+    def _reset_drag_tracking(self, prime=False):
+        self._drag_last_time = time.time() if prime else None
+        self._drag_last_speed = 0.0
+        self._drag_last_axis = None
+
+    def _record_drag_motion(self, axis, angle, now):
+        if self._drag_last_time is not None:
+            dt = now - self._drag_last_time
+            if dt > 0:
+                self._drag_last_speed = angle / dt
+                self._drag_last_axis = axis
+        else:
+            self._drag_last_speed = 0.0
+            self._drag_last_axis = axis
+        self._drag_last_time = now
+
+    def _start_inertia(self, axis, speed, return_to_edit):
+        self._inertia_active = True
+        self._inertia_axis = axis
+        self._inertia_speed = speed
+        self._inertia_return_to_edit = return_to_edit
+        self.edit_mode = False
+        self._invalidate_previews(force=True)
+        self._schedule_rotate_refresh()
+        self._request_redraw()
+
+    def _stop_inertia(self):
+        if not self._inertia_active:
+            return
+        self._inertia_active = False
+        self._inertia_axis = None
+        self._inertia_speed = 0.0
+        self._inertia_return_to_edit = False
+
+    def _finish_inertia(self):
+        if not self._inertia_active:
+            return
+        self._inertia_active = False
+        self._inertia_axis = None
+        self._inertia_speed = 0.0
+        face_name = self._nearest_face()
+        self._snap_to_face(face_name)
+        if self._inertia_return_to_edit:
+            self.edit_mode = True
+        else:
+            self.edit_mode = False
+            self._request_redraw()
+        self._inertia_return_to_edit = False
+
     def _set_auto_spin(self, enabled):
         if enabled == self.auto_spin:
             return
+        self._stop_inertia()
         self.auto_spin = enabled
         self.dragging = False
         self._drag_vector = None
@@ -3272,6 +3333,8 @@ class NotesCubedApp(pyglet.window.Window):
     def on_mouse_press(self, x, y, button, modifiers):
         if button != mouse.LEFT:
             return
+        if self._inertia_active:
+            self._stop_inertia()
         if not self.edit_mode:
             if self._spin_key_hit(x, y):
                 self._last_outside_click_time = 0.0
@@ -3303,6 +3366,7 @@ class NotesCubedApp(pyglet.window.Window):
                 self._request_redraw()
                 self.dragging = True
                 self._drag_started_outside_cube = True
+                self._reset_drag_tracking(prime=True)
                 self.last_mouse = (x, y)
                 self._drag_vector = self._arcball_vector(x, y)
                 return
@@ -3314,6 +3378,7 @@ class NotesCubedApp(pyglet.window.Window):
             self._request_redraw()
             self.dragging = True
             self._drag_started_outside_cube = False
+            self._reset_drag_tracking(prime=True)
             self.last_mouse = (x, y)
             self._drag_vector = self._arcball_vector(x, y)
             return
@@ -3376,6 +3441,7 @@ class NotesCubedApp(pyglet.window.Window):
             self._request_redraw()
             self.dragging = True
             self._drag_started_outside_cube = True
+            self._reset_drag_tracking(prime=True)
             self.last_mouse = (x, y)
             self._drag_vector = self._arcball_vector(x, y)
             return
@@ -3394,6 +3460,7 @@ class NotesCubedApp(pyglet.window.Window):
         self._request_redraw()
         self.dragging = True
         self._drag_started_outside_cube = False
+        self._reset_drag_tracking(prime=True)
         self.last_mouse = (x, y)
         self._drag_vector = self._arcball_vector(x, y)
 
@@ -3401,14 +3468,21 @@ class NotesCubedApp(pyglet.window.Window):
         if buttons & mouse.LEFT and self.dragging:
             if not self._drag_vector:
                 self._drag_vector = self._arcball_vector(x, y)
+            now = time.time()
             current_vec = self._arcball_vector(x, y)
             axis = self._drag_vector.cross(current_vec)
             axis_len = axis.length()
             if axis_len > 0:
                 dot = max(-1.0, min(1.0, self._drag_vector.dot(current_vec)))
                 angle = math.acos(dot) * ROTATE_SENSITIVITY
-                rot = pyglet.math.Mat4.from_rotation(angle, axis.normalize())
+                axis_norm = axis.normalize()
+                rot = pyglet.math.Mat4.from_rotation(angle, axis_norm)
                 self.rotation = rot @ self.rotation
+                self._record_drag_motion(axis_norm, angle, now)
+            else:
+                self._drag_last_time = now
+                self._drag_last_speed = 0.0
+                self._drag_last_axis = None
             self._drag_vector = current_vec
             self.last_mouse = (x, y)
             return
@@ -3427,6 +3501,17 @@ class NotesCubedApp(pyglet.window.Window):
         if self.dragging:
             self.dragging = False
             self._drag_vector = None
+            now = time.time()
+            recent = self._drag_last_time is not None and (now - self._drag_last_time) <= INERTIA_RECENT_SECONDS
+            if (
+                recent
+                and self._drag_last_axis is not None
+                and self._drag_last_speed >= INERTIA_SPEED_THRESHOLD
+            ):
+                self._start_inertia(self._drag_last_axis, self._drag_last_speed, not self._drag_started_outside_cube)
+                self._drag_started_outside_cube = False
+                self._reset_drag_tracking()
+                return
             face_name = self._nearest_face()
             self._snap_to_face(face_name)
             if not self._drag_started_outside_cube:
@@ -3436,6 +3521,7 @@ class NotesCubedApp(pyglet.window.Window):
                 self.edit_mode = False
                 self._request_redraw()
             self._drag_started_outside_cube = False
+            self._reset_drag_tracking()
 
     def on_mouse_scroll(self, x, y, scroll_x, scroll_y):
         if not self.edit_mode:
@@ -3591,6 +3677,11 @@ class NotesCubedApp(pyglet.window.Window):
                 self.settings_open = False
                 self._settings_input_target = None
                 self._preset_dropdown_open = False
+                return
+            if self._inertia_active:
+                self._finish_inertia()
+                self.edit_mode = True
+                self._return_to_edit_when_aligned = False
                 return
             self.edit_mode = not self.edit_mode
             if self.edit_mode:
@@ -3818,6 +3909,7 @@ class NotesCubedApp(pyglet.window.Window):
         self._build_labels()
 
     def _rotate_via_keys(self, symbol, return_to_edit=True, play_sound=False):
+        self._stop_inertia()
         name = self.faces[self.current_face_index].name
         ring = ["front", "right", "back", "left"]
         vertical_ring = ["front", "top", "back", "bottom"]
@@ -3863,6 +3955,14 @@ class NotesCubedApp(pyglet.window.Window):
             rot = pyglet.math.Mat4.from_rotation(-self.auto_spin_speed * dt, Vec3(0, 1, 0))
             self.rotation = rot @ self.rotation
             self.invalid = True
+        if self._inertia_active and not self.dragging and not self.auto_spin:
+            if self._inertia_axis is not None and self._inertia_speed:
+                rot = pyglet.math.Mat4.from_rotation(self._inertia_speed * dt, self._inertia_axis)
+                self.rotation = rot @ self.rotation
+                self.invalid = True
+            self._inertia_speed = max(0.0, self._inertia_speed - INERTIA_DECELERATION * dt)
+            if self._inertia_speed <= INERTIA_STOP_SPEED:
+                self._finish_inertia()
         if not self.edit_mode:
             self.invalid = True
         if self._force_redraw_frames > 0:
