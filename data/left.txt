@@ -1,5 +1,8 @@
 Liberty
 
+2026-01-09
+I sent the updated datadog-report to tekla, I believe it isn't actually using the last deployment date in the production environment, but the last "Event" date, whatever that means. At least it is a record that something happened in their production environment 
+
 * Vicente sent me a monitor that is being reported on but it is in the wrong status in the report - check the workflow and correct it
 
 

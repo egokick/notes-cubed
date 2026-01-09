@@ -1331,6 +1331,7 @@ class NotesCubedApp(pyglet.window.Window):
         self.last_save = time.time()
 
         self.ui_batch = pyglet.graphics.Batch()
+        self.cog_batch = pyglet.graphics.Batch()
         self.settings_batch = pyglet.graphics.Batch()
         self.editor_rect = None
         self.face_label = None
@@ -2024,7 +2025,7 @@ class NotesCubedApp(pyglet.window.Window):
                 anchor_x="center",
                 anchor_y="center",
                 color=(240, 240, 240, 220),
-                batch=self.settings_batch,
+                batch=self.cog_batch,
             )
         if self.settings_panel is None:
             self.settings_panel = shapes.Rectangle(
@@ -2358,7 +2359,7 @@ class NotesCubedApp(pyglet.window.Window):
         self._ensure_settings_ui()
         pad = SETTINGS_PANEL_PADDING
         cog_x = self.editor_rect.x + self.editor_rect.width - pad
-        cog_y = self.editor_rect.y + self.editor_rect.height - pad
+        cog_y = self.editor_rect.y + pad
         self.cog_label.x = cog_x
         self.cog_label.y = cog_y
         if not self.settings_open:
@@ -3248,6 +3249,7 @@ class NotesCubedApp(pyglet.window.Window):
             self._update_scrollbar(active_face, pad)
             self._draw_scrollbar()
             self._update_settings_ui()
+            self.cog_batch.draw()
             self.settings_batch.draw()
         else:
             self.settings_open = False

@@ -15,6 +15,7 @@ User-level behavior for Notes Cubed. Update this document whenever a new require
 - In rotate mode, the cube edges are drawn with a 1px black outline.
 - In edit mode, left-click drag outside the editor area rotates the cube.
 - In rotate mode, left-click drag anywhere not on UI keys rotates the cube.
+- Text positioning aligns between edit mode and rotate mode so face text does not shift.
 - Releasing after a drag snaps to the nearest face and sets it as the current face.
 - If the drag starts outside the cube, releasing keeps the app in rotate mode.
 - If the drag starts on the cube, releasing returns to edit mode.
@@ -49,7 +50,7 @@ User-level behavior for Notes Cubed. Update this document whenever a new require
 - Keys are visible in both edit and rotate modes.
 
 ## Settings panel
-- A cog icon in edit mode opens per-face settings.
+- A cog icon in edit mode opens per-face settings and sits in the bottom-right of the editor.
 - Clicking outside the settings panel closes it without triggering other actions.
 - Font color and face color can be set via preset swatches.
 - Font and face preset swatches share the same color-sorted palette, including black, white, and the primary colors.

@@ -1,8 +1,17 @@
 notes-cubed
 
+Review the README.md to onboard yourself to the project.
+
+0 - sync text changes to github automatically, every 15 seconds?
+
+
+Review the README.md to onboard yourself to the project.
+
+1- if you rotate the cube with click and drag, and you "flick it" i.e. to spin the cube, the cube should have some momentum and continue spinning, and then come to a stop on a single face. if you simply rotate the cube to be mostly on a face, the cube should not continue rotating, it should just snap to that face. This is just a fun feature to play with the cube while you are thinking or waiting, it should not break any existing behavior. 
+
 1 - allow each face to become a kinito pet/tamagochi, they can make noises, you have to feed them. they're cute. 
 
-2 - +Icon to add a new face to the cube (this will appear in the keys) also a delete icon to delete the current face, this will popup with a yes/no confirmation before deleting, both should be in the top right of the face, next to the cog icon
+2 - +Icon to add 		 nea new face to the cube (this will appear in the keys) also a delete icon to delete the current face, this will popup with a yes/no confirmation before deleting, both should be in the top right of the face, next to the cog icon
 
 3 - add a 1pixel black outline around the cog settings icon.
 
